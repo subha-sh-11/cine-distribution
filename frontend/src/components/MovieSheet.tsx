@@ -14,6 +14,7 @@ import {
   excelToUniverSnapshot,
   parseThemePalette,
   setThemePalette,
+  ensureFullBorder,
 } from "@/lib/xlsxToUniver";
 
 // Full Excel-like engine (ribbon + formatting) for uploaded .xlsx files.
@@ -1192,6 +1193,10 @@ export default function MovieSheet({
                 delete st.st;
                 delete st.ul;
               }
+              // A filled cell hides the sheet gridlines, so give it a full
+              // thin-black border — otherwise adjacent filled cells (the green
+              // audience column) read as one solid block with no line between.
+              if (st.bg) ensureFullBorder(st);
             }
           }
         }
@@ -1227,6 +1232,16 @@ export default function MovieSheet({
             const cell = row[c];
             if (cell && cell.v === "[object Object]") cell.v = 0;
             if (cell && typeof cell.v === "object") cell.v = 0;
+            // Whitespace-only text ("" or " ") left by an external paste makes
+            // "text + number" formulas evaluate to #VALUE!. Drop it (keeping any
+            // style) so the formula computes 0, shown as "-" by the number format.
+            if (
+              cell &&
+              !cell.f &&
+              typeof cell.v === "string" &&
+              cell.v.trim() === ""
+            )
+              delete cell.v;
             // Inline style object on the cell → force middle + strip strike cruft.
             if (cell && cell.s && typeof cell.s === "object") {
               cell.s.vt = 2;
@@ -1234,6 +1249,7 @@ export default function MovieSheet({
                 delete cell.s.st;
                 delete cell.s.ul;
               }
+              if (cell.s.bg) ensureFullBorder(cell.s);
             }
           }
         }

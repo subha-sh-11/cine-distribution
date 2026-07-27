@@ -93,6 +93,19 @@ export const MIN_ROW_H = 22;
 // Gridline color for every sheet — dark so empty cells show a crisp border too
 // (not just cells that carry an explicit Excel border), matching Excel's look.
 export const GRID_COLOR = "#000000";
+
+// Ensure a style has a thin-black border on all four sides, adding only the
+// sides it's missing (keeps any real Excel border already there). Used so filled
+// cells — whose fill covers the gridline — still show a line on every edge.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function ensureFullBorder(s: any): void {
+  const line = { s: 1, cl: { rgb: GRID_COLOR } };
+  const bd = (s.bd = s.bd || {});
+  if (!bd.t) bd.t = { ...line };
+  if (!bd.b) bd.b = { ...line };
+  if (!bd.l) bd.l = { ...line };
+  if (!bd.r) bd.r = { ...line };
+}
 // ExcelJS border style → Univer border style enum (approx: thin=1, medium=2, thick=3, dashed=4, dotted=5, double=6)
 const BORDER_STYLE: Record<string, number> = {
   thin: 1,
@@ -148,6 +161,11 @@ function cellStyle(cell: any): any | undefined {
     if (side(b.right)) bd.r = side(b.right);
     if (Object.keys(bd).length) s.bd = bd;
   }
+  // A filled cell hides the sheet gridlines (the background paints over them), so
+  // without its own border there's no visible line between adjacent filled cells
+  // (e.g. the green audience column reads as one solid block). Give every filled
+  // cell a full thin-black border so the grid shows through the fill, like Excel.
+  if (s.bg) ensureFullBorder(s);
   if (cell.numFmt) s.n = { pattern: cell.numFmt };
   // Vertically align every value to the MIDDLE of the cell (centered). Univer
   // renders a cell that HAS a style id but no explicit vertical alignment at the

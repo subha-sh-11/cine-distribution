@@ -5,6 +5,46 @@ import "@univerjs/presets/lib/styles/preset-sheets-core.css";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+// A whitespace-only value ("" or " ") is text; it makes "text + number" formulas
+// evaluate to #VALUE!. Excel-origin pastes drop such junk into empty cells.
+function isBlankText(v: any): boolean {
+  return typeof v === "string" && v.trim() === "";
+}
+
+// After a paste, clear any whitespace/empty-string cell in the pasted region so
+// dependent "+" formulas compute 0 (shown as "-") instead of #VALUE!. The region
+// is the post-paste selection, widened to the clipboard's row/col count so a
+// single-cell anchor selection still covers the whole pasted block.
+function cleanPastedBlanks(univerAPI: any, params: any): void {
+  try {
+    const wb = univerAPI.getActiveWorkbook?.();
+    const ws = wb?.getActiveSheet?.();
+    if (!wb || !ws) return;
+    const active = wb.getActiveRange?.();
+    if (!active) return;
+    const sr = active.getRow?.() ?? 0;
+    const sc = active.getColumn?.() ?? 0;
+    let nr = active.getHeight?.() ?? 1;
+    let nc = active.getWidth?.() ?? 1;
+    const text = params?.text;
+    if (typeof text === "string" && text) {
+      const lines = text.replace(/\r/g, "").split("\n");
+      while (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+      nr = Math.max(nr, lines.length);
+      nc = Math.max(nc, ...lines.map((l: string) => l.split("\t").length));
+    }
+    if (nr * nc > 40000) return; // safety cap — don't scan an enormous paste
+    for (let r = 0; r < nr; r++)
+      for (let c = 0; c < nc; c++) {
+        const cell = ws.getRange(sr + r, sc + c);
+        if (isBlankText(cell.getValue?.())) {
+          if (cell.clear) cell.clear({ contentsOnly: true });
+          else cell.setValueForCell({ v: null });
+        }
+      }
+  } catch {}
+}
+
 // A full Excel/Google-Sheets-like spreadsheet (ribbon, formatting, formulas)
 // powered by Univer. Loads an IWorkbookData snapshot and reports edits back.
 export default function UniverSheet({
@@ -265,7 +305,19 @@ export default function UniverSheet({
               // Defer a tick so Univer finishes committing this edit first.
               setTimeout(() => applyRemoteRef.current?.(pending), 0);
             }
-          })
+          }),
+          // Pasting from an external app (Excel) writes EMPTY source cells as ""
+          // or " " (text). "text + number" evaluates to #VALUE!, so a template
+          // formula row that references a pasted-empty cell shows #VALUE! instead
+          // of blank. After each paste, convert those whitespace/empty-string
+          // cells in the pasted region to truly-empty, so the formulas recompute
+          // to 0 (which the report's number format then displays as "-"). Only
+          // touches blank-text cells — never real values.
+          univerAPI.addEvent(
+            EV?.ClipboardPasted ?? "ClipboardPasted",
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (p: any) => setTimeout(() => cleanPastedBlanks(univerAPI, p), 0)
+          )
         );
       } catch {}
       // Stable content signature — ignore Univer's volatile "rev" counters so we
