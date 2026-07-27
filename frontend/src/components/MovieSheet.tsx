@@ -1200,8 +1200,14 @@ export default function MovieSheet({
       if (!sheets) return snap;
       for (const sid of Object.keys(sheets)) {
         const sheet = sheets[sid];
-        if (sheet && typeof sheet === "object")
+        if (sheet && typeof sheet === "object") {
           sheet.defaultStyle = { ...(sheet.defaultStyle || {}), vt: 2 };
+          // Dark gridlines so every cell (incl. empty ones) shows a crisp border,
+          // matching the black boxes on data cells. Applied at load so movies
+          // uploaded before this change get it without a re-upload.
+          sheet.showGridlines = 1;
+          sheet.gridlinesColor = "#000000";
+        }
         // Floor every row height so the 14pt report font isn't crammed into a
         // too-short row (values overlap top-to-bottom — the "puffed" look). Done
         // at load so movies uploaded before the converter fix render right too.

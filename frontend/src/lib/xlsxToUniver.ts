@@ -90,6 +90,9 @@ const V_ALIGN: Record<string, number> = { top: 1, middle: 2, bottom: 3 };
 // Minimum row height (px). The reports use a 14pt font (~19px); a shorter row
 // crams the value so lines overlap ("puffed"). 22px gives the value breathing room.
 export const MIN_ROW_H = 22;
+// Gridline color for every sheet — dark so empty cells show a crisp border too
+// (not just cells that carry an explicit Excel border), matching Excel's look.
+export const GRID_COLOR = "#000000";
 // ExcelJS border style → Univer border style enum (approx: thin=1, medium=2, thick=3, dashed=4, dotted=5, double=6)
 const BORDER_STYLE: Record<string, number> = {
   thin: 1,
@@ -324,6 +327,9 @@ export function excelToUniverSnapshot(wb: any, name = "Uploaded"): any {
       rowData,
       columnData,
       showGridlines: 1,
+      // Dark gridlines so EVERY cell — including the empty ones — shows a crisp
+      // border, matching the black boxes on the data cells (Excel-report look).
+      gridlinesColor: GRID_COLOR,
     };
   });
 
