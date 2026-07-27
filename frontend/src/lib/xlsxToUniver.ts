@@ -140,7 +140,21 @@ function cellStyle(cell: any): any | undefined {
     if (Object.keys(bd).length) s.bd = bd;
   }
   if (cell.numFmt) s.n = { pattern: cell.numFmt };
-  return Object.keys(s).length ? s : undefined;
+  // Vertically align every value to the BOTTOM of the cell (sitting on the grid
+  // line), matching how the report should read. Univer renders a cell that HAS a
+  // style id but no explicit vertical alignment at the TOP of the row (values
+  // look like they "float"), and it does NOT fall back to the sheet defaultStyle
+  // for those — so we bake the alignment into the style: honor Excel's own
+  // vertical alignment when set, otherwise use BOTTOM.
+  if (s.vt == null) s.vt = 3; // 3 = BOTTOM
+  return s;
+}
+
+// A value that is only whitespace (e.g. a stray " " copied from Excel) is junk:
+// it counts as text, so any +/‑/* formula that references it evaluates to
+// #VALUE!. Treat such cells as empty so the arithmetic (and SUMs) still work.
+function isBlankText(v: any): boolean {
+  return typeof v === "string" && v.trim() === "";
 }
 
 function cellValue(cell: any): { v?: any; f?: string } {
@@ -152,22 +166,26 @@ function cellValue(cell: any): { v?: any; f?: string } {
     const raw = String(cell.formula);
     const f = raw.startsWith("=") ? raw : "=" + raw;
     const r = cell.result;
-    if (r != null && typeof r !== "object") return { v: r, f }; // value + formula
-    if (r && typeof r === "object" && "error" in r) return { f }; // let Univer recompute
-    // Shared-formula children have no cached result in ExcelJS — hand Univer the
-    // formula so it computes the value itself.
+    // Numeric / real string result → keep it as the cached value. Skip blank
+    // strings and error objects (#VALUE! etc.) — never bake an error into a cell.
+    if (r != null && typeof r !== "object" && !isBlankText(r)) return { v: r, f };
+    // Error result or no cached result → just the formula (Univer recomputes).
     return { f };
   }
   const val = cell.value;
   if (val == null) return {};
-  if (typeof val !== "object") return { v: val }; // number / string / boolean
+  if (typeof val !== "object")
+    return isBlankText(val) ? {} : { v: val }; // number / string / boolean
   if (val instanceof Date) return { v: val.toLocaleDateString("en-GB") };
   // Object-typed values — extract the real text, never "[object Object]".
-  if (val.richText) return { v: val.richText.map((t: any) => t.text).join("") };
-  if (val.text != null) return { v: val.text }; // hyperlink
-  if (val.error) return { v: val.error };
+  if (val.richText) {
+    const t = val.richText.map((x: any) => x.text).join("");
+    return isBlankText(t) ? {} : { v: t };
+  }
+  if (val.text != null) return isBlankText(val.text) ? {} : { v: val.text };
+  if (val.error) return {}; // don't import Excel's cached errors (#VALUE!, #REF!…)
   if (val.result != null && typeof val.result !== "object")
-    return { v: val.result };
+    return isBlankText(val.result) ? {} : { v: val.result };
   if (val.formula) return { f: "=" + val.formula }; // formula w/o cached result
   return {}; // unknown object → leave the cell empty (not "[object Object]")
 }
@@ -249,10 +267,25 @@ export function excelToUniverSnapshot(wb: any, name = "Uploaded"): any {
     const columnData: any = {};
     (ws.columns || []).forEach((col: any, idx: number) => {
       if (col && col.width) columnData[idx] = { w: Math.round(col.width * 7) };
-      // Preserve columns hidden in the source Excel (hd = 1).
-      if (col && col.hidden) columnData[idx] = { ...(columnData[idx] || {}), hd: 1 };
       if (col && idx > maxCol) maxCol = idx;
     });
+    // Preserve hidden columns. Read from the RAW parsed column ranges
+    // (ws.model.cols) — the authoritative source that reliably reflects how
+    // Excel stored hidden ranges — plus a fallback via ws.columns. A column with
+    // width 0 is treated as hidden too (some files hide by zeroing the width).
+    const hiddenCols = new Set<number>();
+    const rawCols: any[] = ws.model?.cols || [];
+    for (const rc of rawCols) {
+      const min = (rc?.min ?? 1) - 1;
+      const max = (rc?.max ?? rc?.min ?? 1) - 1;
+      if (rc?.hidden === true || rc?.width === 0)
+        for (let c = min; c <= max; c++) hiddenCols.add(c);
+    }
+    (ws.columns || []).forEach((col: any, idx: number) => {
+      if (col && (col.hidden === true || col.width === 0)) hiddenCols.add(idx);
+    });
+    for (const c of hiddenCols)
+      columnData[c] = { ...(columnData[c] || {}), hd: 1 };
     // Hide the special-show columns on load (hd = 1); a toolbar toggle re-shows.
     for (const c of splCols) columnData[c] = { ...(columnData[c] || {}), hd: 1 };
     const rowData: any = {};
@@ -266,8 +299,9 @@ export function excelToUniverSnapshot(wb: any, name = "Uploaded"): any {
     sheets[sheetId] = {
       id: sheetId,
       name: ws.name || `Sheet${i + 1}`,
-      // Whole sheet renders in Calibri unless a cell overrides it.
-      defaultStyle: { ff: "Calibri" },
+      // Whole sheet renders in Calibri, bottom-aligned unless a cell overrides
+      // it (matches the per-cell default baked in by cellStyle()).
+      defaultStyle: { ff: "Calibri", vt: 3 },
       tabColor: resolveColor(ws.properties?.tabColor),
       // Generous grid so blank space to the right/below fills like a real
       // spreadsheet (Excel/Google Sheets show a full grid of empty cells).
@@ -300,7 +334,7 @@ export function excelToUniverSnapshot(wb: any, name = "Uploaded"): any {
     name,
     appVersion: "1.0.0",
     locale: "enUS",
-    defaultStyle: { ff: "Calibri" }, // whole workbook defaults to Calibri
+    defaultStyle: { ff: "Calibri", vt: 3 }, // Calibri + bottom-aligned
     sheetOrder,
     sheets,
     styles,

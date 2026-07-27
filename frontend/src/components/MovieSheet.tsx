@@ -448,6 +448,18 @@ export default function MovieSheet({
   const [univerKey, setUniverKey] = useState(0); // remount Univer on external pull
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const univerApiRef = useRef<any>(null); // Univer facade API (drives col toggle)
+  // Per-user view state (last active sheet + scroll + selection) so a reload /
+  // reopen lands exactly where the user left off. Stored in localStorage.
+  const lastViewRef = useRef<string>(""); // last-saved view state (JSON)
+  const viewIvRef = useRef<number | null>(null); // periodic view-state saver
+  const viewSettleIvRef = useRef<number | null>(null); // initial restore window
+  // ── Lightweight in-sheet find bar (Ctrl+F) — live search as you type ──
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  // matches on the active sheet: {r,c}; findIdx = current match (0-based, -1 none)
+  const [findMatches, setFindMatches] = useState<{ r: number; c: number }[]>([]);
+  const [findIdx, setFindIdx] = useState(-1);
+  const findInputRef = useRef<HTMLInputElement | null>(null);
   const [univerSplHidden, setUniverSplHidden] = useState(true); // Spl cols collapsed
   const univerReadyRef = useRef(false); // a real snapshot is loaded (guard saves)
   const [loading, setLoading] = useState(true); // loading the shared copy
@@ -1160,10 +1172,27 @@ export default function MovieSheet({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function sanitizeUniver(snap: any): any {
     try {
+      // Force BOTTOM vertical alignment everywhere so cell values sit on the grid
+      // line (Univer draws styled cells that have no explicit vt at the TOP, so
+      // they look like they "float"). Done at load time so EVERY movie — even
+      // ones uploaded earlier — gets it without needing a re-upload. vt: 3 = BOTTOM.
+      if (snap && typeof snap === "object") {
+        snap.defaultStyle = { ...(snap.defaultStyle || {}), vt: 3 };
+        const styles = snap.styles;
+        if (styles && typeof styles === "object") {
+          for (const id of Object.keys(styles)) {
+            const st = styles[id];
+            if (st && typeof st === "object") st.vt = 3;
+          }
+        }
+      }
       const sheets = snap?.sheets;
       if (!sheets) return snap;
       for (const sid of Object.keys(sheets)) {
-        const cd = sheets[sid]?.cellData;
+        const sheet = sheets[sid];
+        if (sheet && typeof sheet === "object")
+          sheet.defaultStyle = { ...(sheet.defaultStyle || {}), vt: 3 };
+        const cd = sheet?.cellData;
         if (!cd) continue;
         for (const r of Object.keys(cd)) {
           const row = cd[r];
@@ -1171,6 +1200,8 @@ export default function MovieSheet({
             const cell = row[c];
             if (cell && cell.v === "[object Object]") cell.v = 0;
             if (cell && typeof cell.v === "object") cell.v = 0;
+            // Inline style object on the cell → force bottom there too.
+            if (cell && cell.s && typeof cell.s === "object") cell.s.vt = 3;
           }
         }
       }
@@ -1307,7 +1338,7 @@ export default function MovieSheet({
       } catch {
         setSaveState("idle");
       }
-    }, 1200);
+    }, 700);
   }
   // Force an immediate save (Ctrl+S / Enter-after-edit) — bypass the debounce.
   async function flushSave() {
@@ -2164,7 +2195,7 @@ export default function MovieSheet({
       } catch {
         pullingRef.current = false;
       }
-    }, 4000);
+    }, 2000); // poll for collaborators' edits (cheap version check every 2s)
 
     // Hover the H.F.A cell (logical column 5) → show the class breakdown card.
     // Click it → pin the card open until you click elsewhere.
@@ -2221,10 +2252,27 @@ export default function MovieSheet({
     };
     window.addEventListener("keydown", onKey, true);
 
+    // Persist the user's position on tab-hide / navigation-away too, so an abrupt
+    // close (before the 1s tracker fires) still remembers where they were.
+    const onLeavePage = () => {
+      try {
+        if (univerApiRef.current) saveViewState(univerApiRef.current);
+      } catch {}
+    };
+    window.addEventListener("beforeunload", onLeavePage);
+    document.addEventListener("visibilitychange", onLeavePage);
+
     return () => {
       destroyed = true;
       clearInterval(pollIv);
+      onLeavePage(); // save final position before this movie view tears down
+      if (viewIvRef.current) clearInterval(viewIvRef.current);
+      viewIvRef.current = null;
+      if (viewSettleIvRef.current) clearInterval(viewSettleIvRef.current);
+      viewSettleIvRef.current = null;
       window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("beforeunload", onLeavePage);
+      document.removeEventListener("visibilitychange", onLeavePage);
       el?.removeEventListener("mousemove", onOver);
       el?.removeEventListener("mouseleave", onLeave);
       el?.removeEventListener("click", onClick);
@@ -2692,6 +2740,166 @@ export default function MovieSheet({
     setSplVisibility(next);
   }
 
+  // ── Per-user view state: last active sheet + scroll + selection ──
+  // Stored per movie in localStorage so a refresh / reopen returns the user to
+  // exactly where they were (their own browser only — never shared/synced).
+  const viewKey = `svf-view:${movieId}`;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function currentViewState(api: any): any | null {
+    try {
+      const wb = api?.getActiveWorkbook?.();
+      const ws = wb?.getActiveSheet?.();
+      if (!wb || !ws) return null;
+      return {
+        sheetId: ws.getSheetId?.() ?? null,
+        scroll: ws.getScrollState?.() ?? null,
+        sel: wb.getActiveRange?.()?.getA1Notation?.() ?? null,
+      };
+    } catch {
+      return null;
+    }
+  }
+  function readViewState(): any | null {
+    try {
+      const s = localStorage.getItem(viewKey);
+      return s ? JSON.parse(s) : null;
+    } catch {
+      return null;
+    }
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function saveViewState(api: any) {
+    const st = currentViewState(api);
+    if (!st || (st.sel == null && st.scroll == null)) return;
+    const s = JSON.stringify(st);
+    if (s === lastViewRef.current) return;
+    lastViewRef.current = s;
+    try {
+      localStorage.setItem(viewKey, s);
+    } catch {}
+  }
+  // Restore the saved position (or A1 if none), then begin tracking so the next
+  // reload lands here. Applied repeatedly for a short window because hiding
+  // columns makes Univer auto-select them slightly after load.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function restoreAndTrackView(api: any) {
+    const saved = readViewState();
+    const start = Date.now();
+    if (viewSettleIvRef.current) clearInterval(viewSettleIvRef.current);
+    const iv = window.setInterval(() => {
+      try {
+        const wb = api.getActiveWorkbook?.();
+        if (wb) {
+          // Return to the saved sheet tab.
+          if (saved?.sheetId && wb.getSheetBySheetId?.(saved.sheetId)) {
+            const s = wb.getSheetBySheetId(saved.sheetId);
+            if (s && s.getSheetId?.() !== wb.getActiveSheet?.()?.getSheetId?.())
+              wb.setActiveSheet?.(s);
+          }
+          const ws = wb.getActiveSheet?.();
+          if (ws) {
+            const wantSel = saved?.sel || "A1";
+            const curSel = wb.getActiveRange?.()?.getA1Notation?.();
+            if (curSel !== wantSel) {
+              try {
+                wb.setActiveRange(ws.getRange(wantSel));
+              } catch {}
+            }
+            if (saved?.scroll) {
+              try {
+                ws.scrollToCell?.(
+                  saved.scroll.sheetViewStartRow || 0,
+                  saved.scroll.sheetViewStartColumn || 0
+                );
+              } catch {}
+            }
+          }
+        }
+      } catch {}
+      // After the settle window, hand control back to the user and start saving.
+      if (Date.now() - start > 1400) {
+        clearInterval(iv);
+        viewSettleIvRef.current = null;
+        lastViewRef.current = JSON.stringify(currentViewState(api) || {});
+        if (viewIvRef.current) clearInterval(viewIvRef.current);
+        viewIvRef.current = window.setInterval(
+          () => saveViewState(api),
+          1000
+        ) as unknown as number;
+      }
+    }, 200) as unknown as number;
+    viewSettleIvRef.current = iv;
+  }
+
+  // ── Find bar helpers: live-search the ACTIVE sheet and jump to matches ──
+  // Searches the current sheet's cell values/formulas (case-insensitive), like a
+  // browser find, and returns the matching cells in reading order.
+  function computeFindMatches(query: string): { r: number; c: number }[] {
+    const api = univerApiRef.current;
+    const snap = univerSnapRef.current;
+    if (!api || !snap?.sheets || !query.trim()) return [];
+    let sid: string | undefined;
+    try {
+      sid = api.getActiveWorkbook?.()?.getActiveSheet?.()?.getSheetId?.();
+    } catch {}
+    if (!sid) return [];
+    const cd = snap.sheets[sid]?.cellData || {};
+    const q = query.toLowerCase();
+    const out: { r: number; c: number }[] = [];
+    for (const r of Object.keys(cd)) {
+      const row = cd[r];
+      for (const c of Object.keys(row)) {
+        const cell = row[c];
+        const text =
+          cell?.v != null ? String(cell.v) : cell?.f != null ? String(cell.f) : "";
+        if (text && text.toLowerCase().includes(q))
+          out.push({ r: Number(r), c: Number(c) });
+      }
+    }
+    out.sort((a, b) => a.r - b.r || a.c - b.c);
+    return out;
+  }
+  function jumpToMatch(m: { r: number; c: number } | undefined) {
+    if (!m) return;
+    const api = univerApiRef.current;
+    try {
+      const wb = api.getActiveWorkbook?.();
+      const ws = wb?.getActiveSheet?.();
+      if (wb && ws) {
+        wb.setActiveRange(ws.getRange(m.r, m.c)); // select (highlights) the match
+        ws.scrollToCell?.(m.r, m.c); // and bring it into view
+      }
+    } catch {}
+  }
+  // Runs on every keystroke — recompute matches and jump to the first one.
+  function runFind(query: string) {
+    setFindQuery(query);
+    const matches = computeFindMatches(query);
+    setFindMatches(matches);
+    if (matches.length) {
+      setFindIdx(0);
+      jumpToMatch(matches[0]);
+    } else {
+      setFindIdx(-1);
+    }
+  }
+  function stepFind(dir: 1 | -1) {
+    if (!findMatches.length) return;
+    const n = (findIdx + dir + findMatches.length) % findMatches.length;
+    setFindIdx(n);
+    jumpToMatch(findMatches[n]);
+  }
+  function openFindBar() {
+    setFindOpen(true);
+    setTimeout(() => {
+      findInputRef.current?.focus();
+      findInputRef.current?.select();
+    }, 0);
+  }
+  function closeFindBar() {
+    setFindOpen(false);
+  }
+
   // Import a local Excel INTO the current workbook — its sheets are appended as
   // new tabs so the user can keep working (not a replace).
   async function appendExcel(file: File) {
@@ -3105,29 +3313,74 @@ export default function MovieSheet({
                   </div>
                 </div>
               )}
+              {/* Lightweight in-sheet find bar (Ctrl+F) — searches live as you
+                  type and jumps to matches, like a browser's find. */}
+              {findOpen && (
+                <div className="absolute right-3 top-3 z-30 flex items-center gap-1 rounded-lg border border-line bg-surface px-2 py-1.5 shadow-pop">
+                  <input
+                    ref={findInputRef}
+                    value={findQuery}
+                    onChange={(e) => runFind(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        stepFind(e.shiftKey ? -1 : 1);
+                      } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        closeFindBar();
+                      }
+                    }}
+                    placeholder="Find in sheet"
+                    className="w-44 bg-transparent px-1 text-sm text-body outline-none placeholder:text-faint"
+                  />
+                  <span className="min-w-[2.75rem] px-1 text-center text-xs tabular-nums text-faint">
+                    {findQuery
+                      ? findMatches.length
+                        ? `${findIdx + 1}/${findMatches.length}`
+                        : "0/0"
+                      : ""}
+                  </span>
+                  <button
+                    onClick={() => stepFind(-1)}
+                    disabled={!findMatches.length}
+                    title="Previous (Shift+Enter)"
+                    className="rounded px-1.5 py-0.5 text-sm text-body hover:bg-chip disabled:opacity-40"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    onClick={() => stepFind(1)}
+                    disabled={!findMatches.length}
+                    title="Next (Enter)"
+                    className="rounded px-1.5 py-0.5 text-sm text-body hover:bg-chip disabled:opacity-40"
+                  >
+                    ↓
+                  </button>
+                  <button
+                    onClick={closeFindBar}
+                    title="Close (Esc)"
+                    className="rounded px-1.5 py-0.5 text-sm text-faint hover:bg-chip"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
               <UniverSheet
                 key={univerKey}
                 snapshot={univerSnap}
                 onChange={onUniverChange}
+                onRequestFind={openFindBar}
                 onReady={(api, phase) => {
                   univerApiRef.current = api;
                   // Reflect the current toggle state on the freshly built book.
                   setSplVisibility(univerSplHidden);
-                  // On first load/upload, hiding columns can leave them
-                  // highlighted — reset the selection to A1 so nothing appears
-                  // selected. Skip on remote pulls so we don't move a
-                  // collaborator's cursor. Repeat at a few ticks because a big
-                  // sheet may re-apply a selection slightly after load.
+                  // On first mount, return the user to exactly where they left
+                  // off last time (saved sheet + scroll + selection), or A1 on a
+                  // first-ever open. This also clears the stray column highlight
+                  // that hiding columns can leave behind. Remote pulls (phase
+                  // "replace") preserve position in place, so skip them here.
                   if (phase === "mount") {
-                    const toA1 = () => {
-                      try {
-                        const wb = api.getActiveWorkbook?.();
-                        const ws = wb?.getActiveSheet?.();
-                        if (wb && ws) wb.setActiveRange(ws.getRange(0, 0));
-                      } catch {}
-                    };
-                    toA1();
-                    [80, 300, 700, 1200].forEach((d) => setTimeout(toA1, d));
+                    restoreAndTrackView(api);
                   }
                 }}
               />
