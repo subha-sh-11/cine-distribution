@@ -1172,17 +1172,27 @@ export default function MovieSheet({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function sanitizeUniver(snap: any): any {
     try {
-      // Force BOTTOM vertical alignment everywhere so cell values sit on the grid
-      // line (Univer draws styled cells that have no explicit vt at the TOP, so
-      // they look like they "float"). Done at load time so EVERY movie — even
-      // ones uploaded earlier — gets it without needing a re-upload. vt: 3 = BOTTOM.
+      // Force MIDDLE vertical alignment everywhere so cell values are centered
+      // (Univer draws styled cells that have no explicit vt at the TOP, so they
+      // look like they "float"). Done at load time so EVERY movie — even ones
+      // uploaded earlier — gets it without needing a re-upload. vt: 2 = MIDDLE.
       if (snap && typeof snap === "object") {
-        snap.defaultStyle = { ...(snap.defaultStyle || {}), vt: 3 };
+        snap.defaultStyle = { ...(snap.defaultStyle || {}), vt: 2 };
         const styles = snap.styles;
         if (styles && typeof styles === "object") {
           for (const id of Object.keys(styles)) {
             const st = styles[id];
-            if (st && typeof st === "object") st.vt = 3;
+            if (st && typeof st === "object") {
+              st.vt = 2;
+              // Strikethrough on report cells is copy-paste cruft (Excel files
+              // accumulate a "bold+strike+underline" font). Drop the strike AND
+              // the underline that rides on the same cruft font, but keep a
+              // standalone underline (e.g. the report title).
+              if (st.st) {
+                delete st.st;
+                delete st.ul;
+              }
+            }
           }
         }
       }
@@ -1191,7 +1201,18 @@ export default function MovieSheet({
       for (const sid of Object.keys(sheets)) {
         const sheet = sheets[sid];
         if (sheet && typeof sheet === "object")
-          sheet.defaultStyle = { ...(sheet.defaultStyle || {}), vt: 3 };
+          sheet.defaultStyle = { ...(sheet.defaultStyle || {}), vt: 2 };
+        // Floor every row height so the 14pt report font isn't crammed into a
+        // too-short row (values overlap top-to-bottom — the "puffed" look). Done
+        // at load so movies uploaded before the converter fix render right too.
+        const rowData = sheet?.rowData;
+        if (rowData && typeof rowData === "object") {
+          for (const rk of Object.keys(rowData)) {
+            const rr = rowData[rk];
+            if (rr && typeof rr === "object" && typeof rr.h === "number" && rr.h < 22)
+              rr.h = 22;
+          }
+        }
         const cd = sheet?.cellData;
         if (!cd) continue;
         for (const r of Object.keys(cd)) {
@@ -1200,8 +1221,14 @@ export default function MovieSheet({
             const cell = row[c];
             if (cell && cell.v === "[object Object]") cell.v = 0;
             if (cell && typeof cell.v === "object") cell.v = 0;
-            // Inline style object on the cell → force bottom there too.
-            if (cell && cell.s && typeof cell.s === "object") cell.s.vt = 3;
+            // Inline style object on the cell → force middle + strip strike cruft.
+            if (cell && cell.s && typeof cell.s === "object") {
+              cell.s.vt = 2;
+              if (cell.s.st) {
+                delete cell.s.st;
+                delete cell.s.ul;
+              }
+            }
           }
         }
       }

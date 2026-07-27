@@ -87,6 +87,9 @@ function resolveColor(color: any): string | undefined {
 
 const H_ALIGN: Record<string, number> = { left: 1, center: 2, right: 3 };
 const V_ALIGN: Record<string, number> = { top: 1, middle: 2, bottom: 3 };
+// Minimum row height (px). The reports use a 14pt font (~19px); a shorter row
+// crams the value so lines overlap ("puffed"). 22px gives the value breathing room.
+export const MIN_ROW_H = 22;
 // ExcelJS border style → Univer border style enum (approx: thin=1, medium=2, thick=3, dashed=4, dotted=5, double=6)
 const BORDER_STYLE: Record<string, number> = {
   thin: 1,
@@ -106,8 +109,11 @@ function cellStyle(cell: any): any | undefined {
   if (font) {
     if (font.bold) s.bl = 1;
     if (font.italic) s.it = 1;
-    if (font.underline) s.ul = { s: 1 };
-    if (font.strike) s.st = { s: 1 };
+    // Strikethrough on report cells is copy-paste cruft (these Excel files carry
+    // a stray "bold+strike+underline" font). Never import the strikethrough, and
+    // skip the underline that rides on the same cruft font — but KEEP a genuine
+    // standalone underline (e.g. the report title, which has no strike).
+    if (font.underline && !font.strike) s.ul = { s: 1 };
     if (font.size) s.fs = font.size;
     // Font family is forced to Calibri workbook-wide via defaultStyle (below),
     // so we deliberately don't copy per-cell font names here.
@@ -140,13 +146,12 @@ function cellStyle(cell: any): any | undefined {
     if (Object.keys(bd).length) s.bd = bd;
   }
   if (cell.numFmt) s.n = { pattern: cell.numFmt };
-  // Vertically align every value to the BOTTOM of the cell (sitting on the grid
-  // line), matching how the report should read. Univer renders a cell that HAS a
-  // style id but no explicit vertical alignment at the TOP of the row (values
-  // look like they "float"), and it does NOT fall back to the sheet defaultStyle
-  // for those — so we bake the alignment into the style: honor Excel's own
-  // vertical alignment when set, otherwise use BOTTOM.
-  if (s.vt == null) s.vt = 3; // 3 = BOTTOM
+  // Vertically align every value to the MIDDLE of the cell (centered). Univer
+  // renders a cell that HAS a style id but no explicit vertical alignment at the
+  // TOP of the row (values look like they "float"), and it does NOT fall back to
+  // the sheet defaultStyle for those — so we bake the alignment into the style:
+  // honor Excel's own vertical alignment when set, otherwise use MIDDLE.
+  if (s.vt == null) s.vt = 2; // 2 = MIDDLE (centered)
   return s;
 }
 
@@ -291,7 +296,12 @@ export function excelToUniverSnapshot(wb: any, name = "Uploaded"): any {
     const rowData: any = {};
     ws.eachRow({ includeEmpty: false }, (row: any, rowNumber: number) => {
       const rd: any = {};
-      if (row.height) rd.h = Math.round(row.height);
+      if (row.height) {
+        // Excel row height is in POINTS; Univer wants PIXELS (× 96/72). Floor at
+        // MIN_ROW_H so the 14pt report font isn't crammed into a too-short row
+        // (values otherwise overlap top-to-bottom — the "puffed" look).
+        rd.h = Math.max(Math.round(row.height * (96 / 72)), MIN_ROW_H);
+      }
       if (row.hidden) rd.hd = 1; // preserve rows hidden in the source Excel
       if (Object.keys(rd).length) rowData[rowNumber - 1] = rd;
     });
@@ -299,9 +309,9 @@ export function excelToUniverSnapshot(wb: any, name = "Uploaded"): any {
     sheets[sheetId] = {
       id: sheetId,
       name: ws.name || `Sheet${i + 1}`,
-      // Whole sheet renders in Calibri, bottom-aligned unless a cell overrides
+      // Whole sheet renders in Calibri, middle-aligned unless a cell overrides
       // it (matches the per-cell default baked in by cellStyle()).
-      defaultStyle: { ff: "Calibri", vt: 3 },
+      defaultStyle: { ff: "Calibri", vt: 2 },
       tabColor: resolveColor(ws.properties?.tabColor),
       // Generous grid so blank space to the right/below fills like a real
       // spreadsheet (Excel/Google Sheets show a full grid of empty cells).
@@ -334,7 +344,7 @@ export function excelToUniverSnapshot(wb: any, name = "Uploaded"): any {
     name,
     appVersion: "1.0.0",
     locale: "enUS",
-    defaultStyle: { ff: "Calibri", vt: 3 }, // Calibri + bottom-aligned
+    defaultStyle: { ff: "Calibri", vt: 2 }, // Calibri + middle-aligned (centered)
     sheetOrder,
     sheets,
     styles,
