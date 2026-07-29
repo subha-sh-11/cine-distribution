@@ -91,29 +91,35 @@ const V_ALIGN: Record<string, number> = { top: 1, middle: 2, bottom: 3 };
 // are ~17px, which crams the value so lines overlap ("puffed"). 20px is close to
 // Excel while still fitting the 14pt value without overlap.
 export const MIN_ROW_H = 20;
-// Gridline colour for every sheet — BLACK, so every cell in the table (data cells
-// AND the empty ones between them) shows a crisp, uniform bold line. This is the
-// zero-bloat way to get "all cells the same bold" without emitting an explicit
-// border on the ~300k empty cells the reports would otherwise need. The two things
-// that made a black grid look messy before are handled separately: (1) the grid is
-// clamped to the data extent (columnCount/rowCount = content + 1) so there is no
-// wall of bold empty columns past the data, and (2) the heading rows above the
-// table are white-filled (a fill paints over the gridline) so the title block stays
-// clean white, matching the source Excel.
-export const GRID_COLOR = "#000000";
-// Pure-white fill used to blank the gridlines under the heading/title rows.
-const WHITE = "#FFFFFF";
-// ExcelJS border style → Univer border style enum (approx: thin=1, medium=2, thick=3, dashed=4, dotted=5, double=6)
+// Excel's own gridline grey. Gridlines are what make an empty area read as a sheet
+// of CELLS rather than a white void, and Excel draws them on every sheet unless the
+// file says otherwise — so we draw them too, at Excel's weight and colour, and take
+// the on/off flag from the file itself (see showGridlines below). They must stay
+// this light: a black grid (what we shipped before) puts a heavy line on every cell
+// and drowns out the report's real box borders, which are imported separately as
+// cell styles and paint on top of the grid.
+export const GRID_COLOR = "#D0D0D0";
+// ExcelJS border style → Univer's BorderStyleTypes enum. These must be the EXACT
+// enum values or the line is drawn at the wrong weight: the old table mapped
+// medium → 2 (which is HAIR, thinner than thin) and thick → 3 (DOTTED), so a heavy
+// Excel border came out lighter than a normal one. Univer's enum is:
+// 0 NONE, 1 THIN, 2 HAIR, 3 DOTTED, 4 DASHED, 5 DASH_DOT, 6 DASH_DOT_DOT,
+// 7 DOUBLE, 8 MEDIUM, 9 MEDIUM_DASHED, 10 MEDIUM_DASH_DOT,
+// 11 MEDIUM_DASH_DOT_DOT, 12 SLANT_DASH_DOT, 13 THICK.
 const BORDER_STYLE: Record<string, number> = {
   thin: 1,
-  hair: 1,
-  medium: 2,
-  thick: 3,
+  hair: 2,
+  dotted: 3,
   dashed: 4,
-  dashDot: 4,
-  dashDotDot: 4,
-  dotted: 5,
-  double: 6,
+  dashDot: 5,
+  dashDotDot: 6,
+  double: 7,
+  medium: 8,
+  mediumDashed: 9,
+  mediumDashDot: 10,
+  mediumDashDotDot: 11,
+  slantDashDot: 12,
+  thick: 13,
 };
 
 function cellStyle(cell: any): any | undefined {
@@ -234,27 +240,12 @@ export function excelToUniverSnapshot(wb: any, name = "Uploaded"): any {
     const cellData: any = {};
     let maxRow = 0;
     let maxCol = 0;
-    // First row (0-indexed) that carries a cell border. In these reports the title
-    // block (rows 1-5) has NO borders and the bordered table begins at the header
-    // row — so this marks where the table starts and everything above it is the
-    // heading, which we later white-fill so its gridlines stay clean.
-    let firstBorderRow = Infinity;
-    // Columns whose header reads "Spl - N" (special shows) — collapsed by default.
-    const splCols = new Set<number>();
     ws.eachRow({ includeEmpty: false }, (row: any, rowNumber: number) => {
       const r = rowNumber - 1;
       row.eachCell({ includeEmpty: false }, (cell: any, colNumber: number) => {
         const c = colNumber - 1;
         const { v, f } = cellValue(cell);
         const s = styleId(cellStyle(cell));
-        if (typeof v === "string" && /^\s*spl\s*-/i.test(v)) splCols.add(c);
-        const bd = cell.border;
-        if (
-          r < firstBorderRow &&
-          bd &&
-          (bd.top?.style || bd.bottom?.style || bd.left?.style || bd.right?.style)
-        )
-          firstBorderRow = r;
         if (v == null && f == null && !s) return;
         (cellData[r] ||= {})[c] = {
           ...(v != null ? { v } : {}),
@@ -266,47 +257,56 @@ export function excelToUniverSnapshot(wb: any, name = "Uploaded"): any {
       });
     });
 
-    // Second pass — capture coloured-fill cells that have NO value. Excel keeps a
-    // continuous fill down the coloured columns (the green audience columns) even
-    // on the empty cells between numbers; the value-only pass above drops those,
-    // so the colour only shows where a number is. Emit the coloured-fill empty
-    // cells here so the whole column reads solid, like Excel. Bounded to the data
-    // range (maxRow/maxCol) so we don't pull in the huge trailing formatted-blank
-    // rows some templates carry. Borders on empty cells are handled cheaply by the
-    // sheet gridline colour (below), so only fills are needed here.
+    // Second pass — the FORMATTED-BUT-EMPTY cells. This is what makes the render a
+    // replica instead of an approximation. The report is a fully bordered grid:
+    // every cell of a theatre block carries a box border and the audience columns
+    // are filled green, and both run straight through the reserved rows between
+    // blocks that hold no numbers. The value-only pass above keeps a cell ONLY where
+    // a value or formula sits, so all of that formatting was dropped — which is why
+    // blank rows rendered as white voids with no cell outlines, and why the green
+    // columns broke into fragments.
+    //
+    // The sweep covers the WHOLE sheet and grows maxRow/maxCol as it finds paint, so
+    // formatting that continues past the last value still comes through. What keeps
+    // it from dragging in the hundreds of trailing formatted-blank rows these
+    // templates carry is the paint test itself: a white fill is indistinguishable
+    // from the empty background, so it does not count as paint.
+    //
+    // It emits ONLY what the file itself paints. ExcelJS hands back the cell's own
+    // format here, so a cell Excel leaves unfilled stays unfilled — no fill is ever
+    // invented, and a row's fill can never bleed onto cells that carry their own.
     ws.eachRow({ includeEmpty: true }, (row: any, rowNumber: number) => {
       const r = rowNumber - 1;
-      if (r > maxRow) return;
       row.eachCell({ includeEmpty: true }, (cell: any, colNumber: number) => {
         const c = colNumber - 1;
-        if (c > maxCol) return;
         if (cellData[r] && cellData[r][c] != null) return; // already captured
+        // Cheap paint test FIRST — a border, or ANY fill. Building the full style
+        // for every cell of a 1700-row sheet is the slow part of an upload, and most
+        // cells paint nothing at all.
+        //
+        // A WHITE fill counts as paint. It looks like nothing on its own, but in
+        // Excel a fill covers the gridlines, so a white-filled block reads as clean
+        // blank space with no cell edges — that is exactly how the report's heading
+        // is built (rows 1-5 carry 32 white-filled cells each). Dropping those fills
+        // as "invisible" let the gridlines show through and turned the heading into
+        // a field of cells.
+        const b = cell.border;
+        const bordered = !!(
+          b &&
+          (b.top?.style || b.bottom?.style || b.left?.style || b.right?.style)
+        );
         const fill = cell.fill;
-        if (!fill || fill.type !== "pattern" || fill.pattern === "none") return;
-        const bg = resolveColor(fill.fgColor) || resolveColor(fill.bgColor);
-        if (!bg || /^#?f{6}$/i.test(bg.replace("#", ""))) return; // skip none / white
-        (cellData[r] ||= {})[c] = { s: styleId(cellStyle(cell)) };
+        const filled = !!(
+          fill && fill.type === "pattern" && fill.pattern && fill.pattern !== "none"
+        );
+        if (!bordered && !filled) return;
+        const st = cellStyle(cell);
+        if (!st) return;
+        (cellData[r] ||= {})[c] = { s: styleId(st) };
+        if (r > maxRow) maxRow = r;
+        if (c > maxCol) maxCol = c;
       });
     });
-
-    // Heading white-fill — every cell above the first bordered row (the title
-    // block) gets a white fill so the black gridlines don't show through it. A fill
-    // paints over the grid, so the title sits on clean white space like the source
-    // Excel, while the table below keeps its bold black grid. Cheap: only the few
-    // heading rows across the data width.
-    if (firstBorderRow !== Infinity && firstBorderRow > 0) {
-      for (let r = 0; r < firstBorderRow; r++) {
-        for (let c = 0; c <= maxCol; c++) {
-          const cur = cellData[r]?.[c];
-          if (cur) {
-            const base = cur.s != null ? styles[cur.s] : undefined;
-            cur.s = styleId({ ...(base || {}), bg: { rgb: WHITE } });
-          } else {
-            (cellData[r] ||= {})[c] = { s: styleId({ bg: { rgb: WHITE }, vt: 3 }) };
-          }
-        }
-      }
-    }
 
     // merged ranges
     const mergeData: any[] = [];
@@ -343,25 +343,30 @@ export function excelToUniverSnapshot(wb: any, name = "Uploaded"): any {
     (ws.columns || []).forEach((col: any, idx: number) => {
       if (col && col.width) columnData[idx] = { w: Math.round(col.width * 7) };
     });
-    // Preserve hidden columns. Read from the RAW parsed column ranges
-    // (ws.model.cols) — the authoritative source that reliably reflects how
-    // Excel stored hidden ranges — plus a fallback via ws.columns. A column with
-    // width 0 is treated as hidden too (some files hide by zeroing the width).
+    // Hidden columns come from the FILE and nowhere else — that is what "exact
+    // replica" means: the sheet opens showing precisely the columns Excel shows.
+    // Read the raw parsed ranges (ws.model.cols), which reliably reflect how Excel
+    // stored the hidden ranges, plus a fallback via ws.columns. A width of 0 counts
+    // as hidden too (some files hide by zeroing the width). We no longer force the
+    // "Spl - N" columns shut: that is a decision the file already makes per sheet
+    // (these reports hide Spl-1/Spl-2 on some days and leave Spl-3 visible), and
+    // overriding it dropped real, populated columns out of the render. The toolbar
+    // toggle still collapses or reveals them on demand.
     const hiddenCols = new Set<number>();
     const rawCols: any[] = ws.model?.cols || [];
     for (const rc of rawCols) {
       const min = (rc?.min ?? 1) - 1;
       const max = (rc?.max ?? rc?.min ?? 1) - 1;
-      if (rc?.hidden === true || rc?.width === 0)
-        for (let c = min; c <= max; c++) hiddenCols.add(c);
+      // Excel writes one catch-all <col> range out to column 16384; only honour a
+      // hidden flag that covers real columns, never the tail past the data.
+      if ((rc?.hidden === true || rc?.width === 0) && min <= maxCol)
+        for (let c = min; c <= Math.min(max, maxCol); c++) hiddenCols.add(c);
     }
     (ws.columns || []).forEach((col: any, idx: number) => {
-      if (col && (col.hidden === true || col.width === 0)) hiddenCols.add(idx);
+      if (idx <= maxCol && col && (col.hidden === true || col.width === 0))
+        hiddenCols.add(idx);
     });
-    for (const c of hiddenCols)
-      columnData[c] = { ...(columnData[c] || {}), hd: 1 };
-    // Hide the special-show columns on load (hd = 1); a toolbar toggle re-shows.
-    for (const c of splCols) columnData[c] = { ...(columnData[c] || {}), hd: 1 };
+    for (const c of hiddenCols) columnData[c] = { ...(columnData[c] || {}), hd: 1 };
     const rowData: any = {};
     ws.eachRow({ includeEmpty: false }, (row: any, rowNumber: number) => {
       const rd: any = {};
@@ -382,24 +387,29 @@ export function excelToUniverSnapshot(wb: any, name = "Uploaded"): any {
       // it (matches Excel's default and the per-cell default in cellStyle()).
       defaultStyle: { ff: "Calibri", vt: 3 },
       tabColor: resolveColor(ws.properties?.tabColor),
-      // Clamp the grid to the data's own extent (+1). With black gridlines any
-      // spare row/column would render as a bold empty margin, so we hug the content
-      // exactly — no wall of bold empty columns past the data, nothing bold below
-      // it. Users add rows/columns via insert. Floors keep tiny/empty sheets usable.
-      rowCount: Math.max(maxRow + 1, 30),
-      columnCount: Math.max(maxCol + 1, 12),
-      defaultColumnWidth: 88,
-      defaultRowHeight: 22,
+      // Run the grid well past the data, the way Excel does. Excel never stops at
+      // the last value — it rules the whole window — so a tight clamp is what left
+      // that bare white area below and to the right of the table. The gridlines are
+      // Excel-light, so the margin reads as empty cells, not as a bold band.
+      rowCount: Math.max(maxRow + 50, 200),
+      columnCount: Math.max(maxCol + 10, 30),
+      // Defaults for the cells the file never sized: take them from the workbook so
+      // the empty margin has Excel's own column width / row height.
+      defaultColumnWidth: Math.round((ws.properties?.defaultColWidth ?? 8.43) * 7),
+      defaultRowHeight: Math.max(
+        Math.round((ws.properties?.defaultRowHeight ?? 15) * (96 / 72)),
+        MIN_ROW_H
+      ),
       mergeData,
       cellData,
       rowData,
       columnData,
-      // Always on: the black gridlines ARE the uniform bold grid the reports want
-      // (every table cell, filled or empty, gets the same crisp line). The heading
-      // stays clean because those rows are white-filled above, and there is no bold
-      // margin because the grid is clamped to the data extent.
-      showGridlines: 1,
-      // Black gridlines → a uniform bold grid on every table cell.
+      // Taken from the FILE (Excel's per-sheet "View → Gridlines"), which is on
+      // unless the sheet says showGridLines="0". With them on, a blank area reads as
+      // a grid of empty cells exactly like Excel, instead of a white void — and the
+      // report's real borders still stand out because they're darker and heavier
+      // than the grid.
+      showGridlines: ws.views?.[0]?.showGridLines === false ? 0 : 1,
       gridlinesColor: GRID_COLOR,
     };
   });

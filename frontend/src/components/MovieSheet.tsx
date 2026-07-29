@@ -14,6 +14,7 @@ import {
   excelToUniverSnapshot,
   parseThemePalette,
   setThemePalette,
+  GRID_COLOR,
 } from "@/lib/xlsxToUniver";
 
 // Full Excel-like engine (ribbon + formatting) for uploaded .xlsx files.
@@ -461,6 +462,9 @@ export default function MovieSheet({
   const [findIdx, setFindIdx] = useState(-1);
   const findInputRef = useRef<HTMLInputElement | null>(null);
   const [univerSplHidden, setUniverSplHidden] = useState(true); // Spl cols collapsed
+  // Has the user actually pressed the Spl toggle? Until they do, column visibility
+  // is left exactly as the uploaded Excel has it.
+  const splTouchedRef = useRef(false);
   const univerReadyRef = useRef(false); // a real snapshot is loaded (guard saves)
   const [loading, setLoading] = useState(true); // loading the shared copy
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">(
@@ -1202,13 +1206,14 @@ export default function MovieSheet({
         const sheet = sheets[sid];
         if (sheet && typeof sheet === "object") {
           sheet.defaultStyle = { ...(sheet.defaultStyle || {}), vt: 3 };
-          // Black gridlines = the uniform bold grid on every table cell (filled or
-          // empty). The heading rows get white-filled below (a fill hides the grid)
-          // so the title block stays clean white, and the grid is clamped to the
-          // data extent (caps below) so there's no bold empty margin. Applied at
-          // load so older movies get the same look without a re-upload.
-          sheet.showGridlines = 1;
-          sheet.gridlinesColor = "#000000";
+          // Gridlines ON in Excel's light grey, so an empty area reads as a grid of
+          // cells instead of a white void — the same as opening the file in Excel.
+          // Applied at load so movies saved before this pick it up without a
+          // re-upload; a sheet whose source file switched gridlines off keeps that.
+          // The colour is always normalised: an older save may carry the black grid
+          // we used to ship, which puts a heavy line on every cell.
+          if (sheet.showGridlines !== 0) sheet.showGridlines = 1;
+          sheet.gridlinesColor = GRID_COLOR;
         }
         // Floor every row height so the 14pt report font isn't crammed into a
         // too-short row (values overlap top-to-bottom — the "puffed" look). Done
@@ -1223,11 +1228,8 @@ export default function MovieSheet({
         }
         const cd = sheet?.cellData;
         if (!cd) continue;
-        const styleMap = snap?.styles;
         let maxDataCol = 0;
         let maxDataRow = 0;
-        // First row carrying a border → the table start; rows above it are heading.
-        let firstBorderRow = Infinity;
         for (const r of Object.keys(cd)) {
           const ri = +r;
           const row = cd[r];
@@ -1236,12 +1238,6 @@ export default function MovieSheet({
             if (ci > maxDataCol) maxDataCol = ci;
             if (ri > maxDataRow) maxDataRow = ri;
             const cell = row[c];
-            if (ri < firstBorderRow && cell && cell.s != null) {
-              const st =
-                typeof cell.s === "object" ? cell.s : styleMap && styleMap[cell.s];
-              const bd = st && st.bd;
-              if (bd && (bd.t || bd.b || bd.l || bd.r)) firstBorderRow = ri;
-            }
             if (cell && cell.v === "[object Object]") cell.v = 0;
             if (cell && typeof cell.v === "object") cell.v = 0;
             // Whitespace-only text ("" or " ") left by an external paste makes
@@ -1264,42 +1260,23 @@ export default function MovieSheet({
             }
           }
         }
-        // Heading white-fill — blank the black gridlines under the title block
-        // (every row above the first bordered row) with a white fill so the heading
-        // stays clean white, while the table below keeps its bold grid. Done with
-        // inline styles (clone of any existing style + white bg) so no shared style
-        // is mutated. Idempotent: re-running just re-whitens the same cells.
-        if (firstBorderRow !== Infinity && firstBorderRow > 0) {
-          for (let r = 0; r < firstBorderRow; r++) {
-            const row = (cd[r] ||= {});
-            for (let c = 0; c <= maxDataCol; c++) {
-              const cur = row[c];
-              if (cur) {
-                const base =
-                  cur.s == null
-                    ? {}
-                    : typeof cur.s === "object"
-                      ? cur.s
-                      : (styleMap && styleMap[cur.s]) || {};
-                cur.s = { ...base, bg: { rgb: "#FFFFFF" }, vt: 3 };
-              } else {
-                row[c] = { s: { bg: { rgb: "#FFFFFF" }, vt: 3 } };
-              }
-            }
-          }
-        }
-        // Clamp an over-wide grid to the data extent (+1). With black gridlines a
-        // spare row/column renders as a bold empty margin, so hug the content — no
-        // wall of bold empty columns, nothing bold below. Only ever SHRINKS and
-        // never below the data, so no cell is hidden — lossless. New uploads already
-        // come clamped from the converter; this fixes older movies on load.
+        // NOTE: nothing here paints. We used to white-fill the heading rows to hide
+        // a black gridline, and to strip the fill from the reserved rows between
+        // theatre blocks. Both were workarounds for the wrong grid; the gridlines
+        // are Excel's own light grey now and every border/fill is imported from the
+        // source, so painting over cells here would only push the render away from
+        // Excel.
+        // GROW the grid past the data the way Excel does — it rules the whole
+        // window, so stopping at the last value is what left a bare white area below
+        // and to the right of the table. Only ever grows; a sheet that already
+        // extends further keeps its size.
         if (typeof sheet.columnCount === "number") {
-          const tightC = maxDataCol + 1;
-          if (sheet.columnCount > tightC) sheet.columnCount = tightC;
+          const wantC = Math.max(maxDataCol + 10, 30);
+          if (sheet.columnCount < wantC) sheet.columnCount = wantC;
         }
         if (typeof sheet.rowCount === "number") {
-          const tightR = maxDataRow + 1;
-          if (sheet.rowCount > tightR) sheet.rowCount = tightR;
+          const wantR = Math.max(maxDataRow + 50, 200);
+          if (sheet.rowCount < wantR) sheet.rowCount = wantR;
         }
       }
     } catch {}
@@ -2833,6 +2810,7 @@ export default function MovieSheet({
 
   function toggleSpl() {
     const next = !univerSplHidden;
+    splTouchedRef.current = true; // from here on, remounts re-apply the toggle
     setUniverSplHidden(next);
     setSplVisibility(next);
   }
@@ -3469,8 +3447,11 @@ export default function MovieSheet({
                 onRequestFind={openFindBar}
                 onReady={(api, phase) => {
                   univerApiRef.current = api;
-                  // Reflect the current toggle state on the freshly built book.
-                  setSplVisibility(univerSplHidden);
+                  // Reflect the toggle state on the freshly built book — but ONLY
+                  // once the user has actually used the toggle. Untouched, the sheet
+                  // keeps exactly the columns the uploaded Excel shows, instead of us
+                  // collapsing every Spl column the moment the book mounts.
+                  if (splTouchedRef.current) setSplVisibility(univerSplHidden);
                   // On first mount, return the user to exactly where they left
                   // off last time (saved sheet + scroll + selection), or A1 on a
                   // first-ever open. This also clears the stray column highlight

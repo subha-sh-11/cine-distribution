@@ -10,9 +10,7 @@ themesweep.py
 __pycache__/
 *.pyc
 
-# Source spreadsheet (not needed in the repo)
-*.xls
-*.xlsx
+
 
 # Generated / intermediate data dumps
 allrows.txt
@@ -22,4 +20,6 @@ theatres.json
 .DS_Store
 Thumbs.db
 .idea/
+
 .vscode/
+
