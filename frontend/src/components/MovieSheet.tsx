@@ -14,7 +14,6 @@ import {
   excelToUniverSnapshot,
   parseThemePalette,
   setThemePalette,
-  ensureFullBorder,
 } from "@/lib/xlsxToUniver";
 
 // Full Excel-like engine (ribbon + formatting) for uploaded .xlsx files.
@@ -1173,18 +1172,18 @@ export default function MovieSheet({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function sanitizeUniver(snap: any): any {
     try {
-      // Force MIDDLE vertical alignment everywhere so cell values are centered
-      // (Univer draws styled cells that have no explicit vt at the TOP, so they
-      // look like they "float"). Done at load time so EVERY movie — even ones
-      // uploaded earlier — gets it without needing a re-upload. vt: 2 = MIDDLE.
+      // Force BOTTOM vertical alignment everywhere to match Excel (Univer draws
+      // styled cells that have no explicit vt at the TOP, so they look like they
+      // "float"). Done at load time so EVERY movie — even ones uploaded earlier —
+      // gets it without needing a re-upload. vt: 3 = BOTTOM (Excel default).
       if (snap && typeof snap === "object") {
-        snap.defaultStyle = { ...(snap.defaultStyle || {}), vt: 2 };
+        snap.defaultStyle = { ...(snap.defaultStyle || {}), vt: 3 };
         const styles = snap.styles;
         if (styles && typeof styles === "object") {
           for (const id of Object.keys(styles)) {
             const st = styles[id];
             if (st && typeof st === "object") {
-              st.vt = 2;
+              st.vt = 3;
               // Strikethrough on report cells is copy-paste cruft (Excel files
               // accumulate a "bold+strike+underline" font). Drop the strike AND
               // the underline that rides on the same cruft font, but keep a
@@ -1193,10 +1192,6 @@ export default function MovieSheet({
                 delete st.st;
                 delete st.ul;
               }
-              // A filled cell hides the sheet gridlines, so give it a full
-              // thin-black border — otherwise adjacent filled cells (the green
-              // audience column) read as one solid block with no line between.
-              if (st.bg) ensureFullBorder(st);
             }
           }
         }
@@ -1206,10 +1201,12 @@ export default function MovieSheet({
       for (const sid of Object.keys(sheets)) {
         const sheet = sheets[sid];
         if (sheet && typeof sheet === "object") {
-          sheet.defaultStyle = { ...(sheet.defaultStyle || {}), vt: 2 };
-          // Dark gridlines so every cell (incl. empty ones) shows a crisp border,
-          // matching the black boxes on data cells. Applied at load so movies
-          // uploaded before this change get it without a re-upload.
+          sheet.defaultStyle = { ...(sheet.defaultStyle || {}), vt: 3 };
+          // Black gridlines = the uniform bold grid on every table cell (filled or
+          // empty). The heading rows get white-filled below (a fill hides the grid)
+          // so the title block stays clean white, and the grid is clamped to the
+          // data extent (caps below) so there's no bold empty margin. Applied at
+          // load so older movies get the same look without a re-upload.
           sheet.showGridlines = 1;
           sheet.gridlinesColor = "#000000";
         }
@@ -1220,16 +1217,31 @@ export default function MovieSheet({
         if (rowData && typeof rowData === "object") {
           for (const rk of Object.keys(rowData)) {
             const rr = rowData[rk];
-            if (rr && typeof rr === "object" && typeof rr.h === "number" && rr.h < 22)
-              rr.h = 22;
+            if (rr && typeof rr === "object" && typeof rr.h === "number" && rr.h < 20)
+              rr.h = 20;
           }
         }
         const cd = sheet?.cellData;
         if (!cd) continue;
+        const styleMap = snap?.styles;
+        let maxDataCol = 0;
+        let maxDataRow = 0;
+        // First row carrying a border → the table start; rows above it are heading.
+        let firstBorderRow = Infinity;
         for (const r of Object.keys(cd)) {
+          const ri = +r;
           const row = cd[r];
           for (const c of Object.keys(row)) {
+            const ci = +c;
+            if (ci > maxDataCol) maxDataCol = ci;
+            if (ri > maxDataRow) maxDataRow = ri;
             const cell = row[c];
+            if (ri < firstBorderRow && cell && cell.s != null) {
+              const st =
+                typeof cell.s === "object" ? cell.s : styleMap && styleMap[cell.s];
+              const bd = st && st.bd;
+              if (bd && (bd.t || bd.b || bd.l || bd.r)) firstBorderRow = ri;
+            }
             if (cell && cell.v === "[object Object]") cell.v = 0;
             if (cell && typeof cell.v === "object") cell.v = 0;
             // Whitespace-only text ("" or " ") left by an external paste makes
@@ -1242,16 +1254,52 @@ export default function MovieSheet({
               cell.v.trim() === ""
             )
               delete cell.v;
-            // Inline style object on the cell → force middle + strip strike cruft.
+            // Inline style object on the cell → force bottom + strip strike cruft.
             if (cell && cell.s && typeof cell.s === "object") {
-              cell.s.vt = 2;
+              cell.s.vt = 3;
               if (cell.s.st) {
                 delete cell.s.st;
                 delete cell.s.ul;
               }
-              if (cell.s.bg) ensureFullBorder(cell.s);
             }
           }
+        }
+        // Heading white-fill — blank the black gridlines under the title block
+        // (every row above the first bordered row) with a white fill so the heading
+        // stays clean white, while the table below keeps its bold grid. Done with
+        // inline styles (clone of any existing style + white bg) so no shared style
+        // is mutated. Idempotent: re-running just re-whitens the same cells.
+        if (firstBorderRow !== Infinity && firstBorderRow > 0) {
+          for (let r = 0; r < firstBorderRow; r++) {
+            const row = (cd[r] ||= {});
+            for (let c = 0; c <= maxDataCol; c++) {
+              const cur = row[c];
+              if (cur) {
+                const base =
+                  cur.s == null
+                    ? {}
+                    : typeof cur.s === "object"
+                      ? cur.s
+                      : (styleMap && styleMap[cur.s]) || {};
+                cur.s = { ...base, bg: { rgb: "#FFFFFF" }, vt: 3 };
+              } else {
+                row[c] = { s: { bg: { rgb: "#FFFFFF" }, vt: 3 } };
+              }
+            }
+          }
+        }
+        // Clamp an over-wide grid to the data extent (+1). With black gridlines a
+        // spare row/column renders as a bold empty margin, so hug the content — no
+        // wall of bold empty columns, nothing bold below. Only ever SHRINKS and
+        // never below the data, so no cell is hidden — lossless. New uploads already
+        // come clamped from the converter; this fixes older movies on load.
+        if (typeof sheet.columnCount === "number") {
+          const tightC = maxDataCol + 1;
+          if (sheet.columnCount > tightC) sheet.columnCount = tightC;
+        }
+        if (typeof sheet.rowCount === "number") {
+          const tightR = maxDataRow + 1;
+          if (sheet.rowCount > tightR) sheet.rowCount = tightR;
         }
       }
     } catch {}
