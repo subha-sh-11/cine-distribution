@@ -1,0 +1,69 @@
+diff --git a/node_modules/@univerjs/design/lib/es/index.js b/node_modules/@univerjs/design/lib/es/index.js
+index 6107afe..430478c 100644
+--- a/node_modules/@univerjs/design/lib/es/index.js
++++ b/node_modules/@univerjs/design/lib/es/index.js
+@@ -1318,6 +1318,20 @@ const colorPresets = [
+ 		"#751A3D"
+ 	]
+ ];
++const standardColors = [
++	[
++		"#C00000",
++		"#FF0000",
++		"#FFC000",
++		"#FFFF00",
++		"#92D050",
++		"#00B050",
++		"#00B0F0",
++		"#0070C0",
++		"#002060",
++		"#7030A0"
++	]
++];
+ 
+ //#endregion
+ //#region src/components/color-picker/ColorPresets.tsx
+@@ -1342,21 +1356,31 @@ function ColorPresets({ hsv, onChange }) {
+ 		onChange(h, s, v);
+ 	}, [onChange]);
+ 	const currentColor = hsvToHex(hsv[0], hsv[1], hsv[2]);
++	const renderRow = (row, i) => /* @__PURE__ */ jsx("div", {
++		className: "univer-grid univer-grid-flow-col univer-items-center univer-justify-between univer-gap-2",
++		children: row.map((color, j) => /* @__PURE__ */ jsx("button", {
++			type: "button",
++			className: clsx("univer-box-border univer-size-5 univer-cursor-pointer univer-rounded-full univer-border univer-border-solid univer-border-transparent univer-bg-gray-300 univer-transition-shadow", {
++				"univer-ring-2 univer-ring-offset-2 univer-ring-offset-white dark:!univer-ring-primary-600 dark:!univer-ring-offset-gray-600": color.toUpperCase() === currentColor.toUpperCase(),
++				"!univer-border-gray-200": i === 0 && j === 0
++			}),
++			style: { backgroundColor: color },
++			onClick: () => handleSelectPreset(color)
++		}, j))
++	}, i);
++	const sectionLabel = (text, key, extra) => /* @__PURE__ */ jsx("div", {
++		className: clsx("univer-text-xs univer-font-medium univer-text-gray-500 dark:!univer-text-gray-400", extra),
++		children: text
++	}, key);
+ 	return /* @__PURE__ */ jsx("div", {
+ 		"data-u-comp": "color-picker-presets",
+ 		className: "univer-grid univer-content-center univer-gap-2",
+-		children: colorPresets.map((row, i) => /* @__PURE__ */ jsx("div", {
+-			className: "univer-grid univer-grid-flow-col univer-items-center univer-justify-between univer-gap-2",
+-			children: row.map((color, j) => /* @__PURE__ */ jsx("button", {
+-				type: "button",
+-				className: clsx("univer-box-border univer-size-5 univer-cursor-pointer univer-rounded-full univer-border univer-border-solid univer-border-transparent univer-bg-gray-300 univer-transition-shadow", {
+-					"univer-ring-2 univer-ring-offset-2 univer-ring-offset-white dark:!univer-ring-primary-600 dark:!univer-ring-offset-gray-600": color.toUpperCase() === currentColor.toUpperCase(),
+-					"!univer-border-gray-200": i === 0 && j === 0
+-				}),
+-				style: { backgroundColor: color },
+-				onClick: () => handleSelectPreset(color)
+-			}, j))
+-		}, i))
++		children: [
++			sectionLabel("Theme Colors", "label-theme"),
++			...colorPresets.map((row, i) => renderRow(row, i)),
++			sectionLabel("Standard Colors", "label-standard", "univer-mt-1"),
++			...standardColors.map((row, i) => renderRow(row, "standard-" + i))
++		]
+ 	});
+ }
+ 

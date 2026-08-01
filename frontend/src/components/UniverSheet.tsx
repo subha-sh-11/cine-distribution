@@ -52,11 +52,13 @@ export default function UniverSheet({
   onChange,
   onReady,
   onRequestFind,
+  readOnly,
 }: {
   snapshot: any;
   onChange?: (snap: any) => void;
   onReady?: (api: any, phase: "mount" | "replace") => void;
   onRequestFind?: () => void;
+  readOnly?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const univerRef = useRef<any>(null);
@@ -71,6 +73,34 @@ export default function UniverSheet({
   onReadyRef.current = onReady;
   const onRequestFindRef = useRef(onRequestFind);
   onRequestFindRef.current = onRequestFind;
+  // Live Format Painter status (0/1/2), mirrored here so the Esc handler can
+  // cancel it without querying Univer's internal service.
+  const painterStatusRef = useRef(0);
+  // Source cell's row heights + column widths, captured when the painter is
+  // armed. Univer's painter only copies cell STYLES (font, fill, border, number
+  // format, alignment) + merges — Excel also carries the row height / column
+  // width, so we copy those ourselves onto the target when it applies.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const painterSrcRef = useRef<any>(null);
+  // Viewer (share role "viewer") → the whole workbook is read-only: no cell
+  // editing, the edit toolbar is disabled, and undo/redo/word-delete are inert.
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
+  // Lock/unlock the workbook to match the access role. Retried across the mount
+  // window because the permission service (and the workbook instance) aren't ready
+  // the instant the sheet is created — a single early call is silently dropped, so
+  // the sheet stays editable. Each retry reads the LIVE role, so it also catches
+  // the role arriving slightly after mount.
+  const applyEditable = (api: any) => {
+    const set = () => {
+      try {
+        const wb = api?.getActiveWorkbook?.();
+        if (wb?.setEditable) wb.setEditable(!readOnlyRef.current);
+      } catch {}
+    };
+    set();
+    [150, 500, 1000, 2000, 3500].forEach((ms) => setTimeout(set, ms));
+  };
   // Excel-style Shift+click column-header range selection.
   const shiftRef = useRef(false); // Shift held at the last pointer/key event
   const anchorColRef = useRef<number | null>(null); // last plain column click
@@ -178,6 +208,45 @@ export default function UniverSheet({
         wb.setActiveSheet(sheets[next]);
       } catch {}
     };
+    // Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z → route undo/redo to Univer even when focus
+    // has left the sheet. Univer only handles these while its own cell editor is
+    // focused; the moment focus moves to another element (a toolbar button, a
+    // dialog, the page body) the keypress is lost and undo appears to do nothing.
+    // We forward to Univer's command — but bail when a real text field / the
+    // Univer cell editor is focused, so we never double-undo or steal a field's
+    // own undo (Univer already handles it there).
+    const onUndoRedo = (e: KeyboardEvent) => {
+      if (readOnlyRef.current) return; // viewer → no undo/redo
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const k = e.key.toLowerCase();
+      const isUndo = k === "z" && !e.shiftKey;
+      const isRedo = k === "y" || (k === "z" && e.shiftKey);
+      if (!isUndo && !isRedo) return;
+      const ae = document.activeElement as HTMLElement | null;
+      // Univer's cell editor is a contentEditable DIV that holds DOM focus even
+      // when NOT editing (just selecting a cell — e.g. right after a Format
+      // Painter apply). In that state the browser runs its own no-op editable
+      // "undo" and swallows the key, so undo appears dead. We therefore only
+      // defer to the editor while a cell is ACTUALLY being edited; otherwise we
+      // drive the workbook undo ourselves. Real text fields (Find box, dialogs)
+      // and any OTHER contentEditable keep their own undo.
+      const isUniverEditor =
+        !!ae && ae.id === "__editor___INTERNAL_EDITOR__DOCS_NORMAL";
+      if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA")) return;
+      if (ae && ae.isContentEditable && !isUniverEditor) return;
+      if (isUniverEditor && editingRef.current) return;
+      // Use the workbook facade's undo/redo: it calls focusUnit() first, so it
+      // works even though DOM focus is on some element outside the sheet (the
+      // raw undo command would target the "focused unit", which is nothing here).
+      const wb = apiRef.current?.getActiveWorkbook?.();
+      if (!wb) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      try {
+        if (isUndo) wb.undo();
+        else wb.redo();
+      } catch {}
+    };
     window.addEventListener("keydown", onKey);
     window.addEventListener("keyup", onKey);
     window.addEventListener("pointerdown", onDown, true);
@@ -185,6 +254,65 @@ export default function UniverSheet({
     window.addEventListener("keydown", onShiftTab, true);
     window.addEventListener("keydown", onArrowLeft, true);
     window.addEventListener("keydown", onSheetSwitch, true);
+    // Ctrl+Backspace / Ctrl+Shift+Backspace → delete the previous WORD while
+    // editing a cell (Univer's canvas editor only deletes a single character and
+    // ignores the OS word-delete). We act against Univer's document model: read
+    // the in-progress text, find the previous word boundary from the end, select
+    // that span and run Univer's own delete command.
+    const onWordDelete = (e: KeyboardEvent) => {
+      if (readOnlyRef.current) return; // viewer → no editing
+      if (e.key !== "Backspace" || !(e.ctrlKey || e.metaKey) || e.altKey) return;
+      if (!editingRef.current) return; // only while a cell is being edited
+      const api = apiRef.current;
+      if (!api) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let doc: any;
+      try {
+        doc = api.getActiveDocument?.();
+      } catch {
+        return;
+      }
+      if (!doc) return;
+      let content = "";
+      try {
+        content = doc.getSnapshot?.().body?.dataStream ?? "";
+      } catch {
+        return;
+      }
+      content = content.replace(/[\r\n]+$/, ""); // drop the trailing paragraph marker
+      const end = content.length;
+      if (end <= 0) return;
+      let i = end; // caret assumed at the end (the common case: mid-typing)
+      while (i > 0 && /\s/.test(content[i - 1])) i--; // eat trailing spaces
+      while (i > 0 && !/\s/.test(content[i - 1])) i--; // eat the word itself
+      if (i >= end) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      try {
+        doc.setSelection(i, end);
+        api.executeCommand("doc.command.delete-left");
+      } catch {}
+    };
+    // Esc while the Format Painter is armed → cancel it (Excel behaviour).
+    // Skipped while editing a cell / in a text field so it never steals the
+    // editor's own Escape (which cancels the in-progress edit).
+    const onPainterEsc = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || painterStatusRef.current === 0) return;
+      if (editingRef.current) return;
+      const ae = document.activeElement as HTMLElement | null;
+      if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA")) return;
+      const api = apiRef.current;
+      if (!api) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      // Either command toggles the painter OFF when its status is non-zero.
+      try {
+        api.executeCommand("sheet.command.set-once-format-painter");
+      } catch {}
+    };
+    window.addEventListener("keydown", onUndoRedo, true);
+    window.addEventListener("keydown", onWordDelete, true);
+    window.addEventListener("keydown", onPainterEsc, true);
     (async () => {
       const presets = await import("@univerjs/presets");
       const { createUniver, LocaleType, defaultTheme } = presets as any;
@@ -247,6 +375,216 @@ export default function UniverSheet({
       // special-shows column toggle).
       try {
         onReadyRef.current?.(univerAPI, "mount");
+      } catch {}
+      applyEditable(univerAPI); // viewer → lock the workbook read-only
+
+      // Add a native Format Painter button to Univer's own formatting ribbon.
+      // The preset ships the command + service (and its BrushIcon) but not the
+      // toolbar entry, so we register it into the FORMAT group next to
+      // bold/italic. Single-click = apply once; double-click = sticky (Univer's
+      // `subId`); the button auto-highlights while armed. Row height / column
+      // width are carried on top by the apply listener above.
+      try {
+        const [ui, sheetsUi, core, sheets, rx] = await Promise.all([
+          import("@univerjs/ui"),
+          import("@univerjs/sheets-ui"),
+          import("@univerjs/core"),
+          import("@univerjs/sheets"),
+          import("rxjs"),
+        ]);
+        const {
+          IMenuManagerService,
+          RibbonPosition,
+          RibbonStartGroup,
+          MenuItemType,
+          getMenuHiddenObservable,
+        } = ui as any;
+        const {
+          IFormatPainterService,
+          SetOnceFormatPainterCommand,
+          SetInfiniteFormatPainterCommand,
+        } = sheetsUi as any;
+        const { UniverInstanceType, IUniverInstanceService } = core as any;
+        const {
+          SetWorksheetRowHeightMutation,
+          SetWorksheetRowHeightMutationFactory,
+          SetWorksheetColWidthMutation,
+          SetWorksheetColWidthMutationFactory,
+        } = sheets as any;
+        const { Observable } = rx as any;
+        const injector = univerRef.current?.__getInjector?.();
+        const menuManager = injector?.get?.(IMenuManagerService);
+        if (menuManager?.mergeMenu && SetOnceFormatPainterCommand?.id) {
+          const menuItemFactory = (accessor: any) => {
+            const fps = accessor.get(IFormatPainterService);
+            return {
+              id: SetOnceFormatPainterCommand.id,
+              subId: SetInfiniteFormatPainterCommand.id,
+              type: MenuItemType.BUTTON,
+              icon: "BrushIcon",
+              title: "Format Painter",
+              tooltip: "Format Painter (double-click to keep applying)",
+              activated$: new Observable((subscriber: any) => {
+                let sub: any;
+                try {
+                  sub = fps.status$.subscribe((s: number) =>
+                    subscriber.next(s !== 0)
+                  );
+                } catch {
+                  subscriber.next(false);
+                }
+                return () => {
+                  try {
+                    sub?.unsubscribe?.();
+                  } catch {}
+                };
+              }),
+              hidden$: getMenuHiddenObservable(
+                accessor,
+                UniverInstanceType.UNIVER_SHEET
+              ),
+            };
+          };
+          menuManager.mergeMenu({
+            [RibbonPosition.START]: {
+              [RibbonStartGroup.FORMAT]: {
+                [SetOnceFormatPainterCommand.id]: {
+                  order: 0,
+                  menuItemFactory,
+                },
+              },
+            },
+          });
+        }
+
+        // Univer's Format Painter copies cell STYLES only. Fold row height +
+        // column width into the SAME paint by registering a hook: its onApply
+        // returns the row-height / column-width mutations (with matching undos),
+        // which Univer executes together with the style copy and pushes as ONE
+        // undo entry — so a single Ctrl+Z reverts the entire paint. onStatusChange
+        // both tracks the armed state (for Esc) and snapshots the source's
+        // row heights / column widths while the source is still selected.
+        const fps = injector?.get?.(IFormatPainterService);
+        const uis = injector?.get?.(IUniverInstanceService);
+        if (fps?.addHook && uis) {
+          fps.addHook({
+            id: "svf-format-painter-dimensions",
+            priority: 0,
+            onStatusChange: (status: number) => {
+              painterStatusRef.current = status;
+              if (status === 0) return;
+              try {
+                const wb = apiRef.current?.getActiveWorkbook?.();
+                const ws = wb?.getActiveSheet?.();
+                const r = wb?.getActiveRange?.()?.getRange?.();
+                if (!ws || !r) return;
+                const nRows = r.endRow - r.startRow + 1;
+                const nCols = r.endColumn - r.startColumn + 1;
+                const rowHeights: number[] = [];
+                for (let i = 0; i < nRows; i++)
+                  rowHeights.push(ws.getRowHeight?.(r.startRow + i));
+                const colWidths: number[] = [];
+                for (let j = 0; j < nCols; j++)
+                  colWidths.push(ws.getColumnWidth?.(r.startColumn + j));
+                painterSrcRef.current = { nRows, nCols, rowHeights, colWidths };
+              } catch {}
+            },
+            onApply: (unitId: string, subUnitId: string, targetRange: any) => {
+              const empty = { undos: [], redos: [] };
+              const src = painterSrcRef.current;
+              if (!src || !targetRange) return empty;
+              try {
+                const workbook = uis.getUniverSheetInstance?.(unitId);
+                const worksheet = workbook?.getSheetBySheetId?.(subUnitId);
+                if (!worksheet) return empty;
+                let { startRow, endRow, startColumn, endColumn } = targetRange;
+                // Painting from a single cell expands to the source's size,
+                // exactly like Univer's style apply does.
+                if (startRow === endRow && startColumn === endColumn) {
+                  endRow = startRow + src.nRows - 1;
+                  endColumn = startColumn + src.nCols - 1;
+                }
+                const redos: any[] = [];
+                const undos: any[] = [];
+                // Row heights — tile the source pattern, batching equal runs.
+                const nT = endRow - startRow + 1;
+                for (let tr = 0; tr < nT; ) {
+                  const h = src.rowHeights[tr % src.nRows];
+                  let run = 1;
+                  while (
+                    tr + run < nT &&
+                    src.rowHeights[(tr + run) % src.nRows] === h
+                  )
+                    run++;
+                  if (h > 0) {
+                    const params = {
+                      unitId,
+                      subUnitId,
+                      ranges: [
+                        {
+                          startRow: startRow + tr,
+                          endRow: startRow + tr + run - 1,
+                          startColumn: 0,
+                          endColumn: 0,
+                        },
+                      ],
+                      rowHeight: h,
+                    };
+                    const undoParams = SetWorksheetRowHeightMutationFactory(
+                      params,
+                      worksheet
+                    );
+                    redos.push({ id: SetWorksheetRowHeightMutation.id, params });
+                    undos.push({
+                      id: SetWorksheetRowHeightMutation.id,
+                      params: undoParams,
+                    });
+                  }
+                  tr += run;
+                }
+                // Column widths — same tiling + batching.
+                const nC = endColumn - startColumn + 1;
+                for (let tc = 0; tc < nC; ) {
+                  const w = src.colWidths[tc % src.nCols];
+                  let run = 1;
+                  while (
+                    tc + run < nC &&
+                    src.colWidths[(tc + run) % src.nCols] === w
+                  )
+                    run++;
+                  if (w > 0) {
+                    const params = {
+                      unitId,
+                      subUnitId,
+                      ranges: [
+                        {
+                          startRow: 0,
+                          endRow: 0,
+                          startColumn: startColumn + tc,
+                          endColumn: startColumn + tc + run - 1,
+                        },
+                      ],
+                      colWidth: w,
+                    };
+                    const undoParams = SetWorksheetColWidthMutationFactory(
+                      params,
+                      worksheet
+                    );
+                    redos.push({ id: SetWorksheetColWidthMutation.id, params });
+                    undos.push({
+                      id: SetWorksheetColWidthMutation.id,
+                      params: undoParams,
+                    });
+                  }
+                  tc += run;
+                }
+                return { undos, redos };
+              } catch {
+                return empty;
+              }
+            },
+          });
+        }
       } catch {}
 
       // Excel-style column range selection: click a column header, then
@@ -362,6 +700,9 @@ export default function UniverSheet({
       window.removeEventListener("keydown", onShiftTab, true);
       window.removeEventListener("keydown", onArrowLeft, true);
       window.removeEventListener("keydown", onSheetSwitch, true);
+      window.removeEventListener("keydown", onUndoRedo, true);
+      window.removeEventListener("keydown", onWordDelete, true);
+      window.removeEventListener("keydown", onPainterEsc, true);
       try {
         colEvtDisposeRef.current?.dispose?.();
       } catch {}
@@ -485,6 +826,7 @@ export default function UniverSheet({
     try {
       onReadyRef.current?.(api, "replace");
     } catch {}
+    applyEditable(api); // re-assert read-only after a structural rebuild
     try {
       const wb = api.getActiveWorkbook?.();
       const ws = sid ? wb?.getSheetBySheetId?.(sid) : null;
@@ -513,8 +855,36 @@ export default function UniverSheet({
     }
     replacingRef.current = true;
     try {
+      // Capture this user's viewport + selection BEFORE the patch. Applying a
+      // remote/round-tripped snapshot can move the cursor — hiding/showing a
+      // column runs Univer's SetColHidden command, which reselects the affected
+      // columns and yanks the active cell "somewhere else" while the user is
+      // working. We restore exactly where they were afterwards. (fullRebuild
+      // already restores its own view, so only guard the in-place patch path.)
+      let savedSel: string | null = null;
+      let savedScroll: any = null;
+      try {
+        const wb0 = api.getActiveWorkbook?.();
+        const ws0 = wb0?.getActiveSheet?.();
+        savedSel = wb0?.getActiveRange?.()?.getA1Notation?.() ?? null;
+        savedScroll = ws0?.getScrollState?.() ?? null;
+      } catch {}
       const ok = patchInPlace(api, prevSnapRef.current, snap);
       if (!ok) fullRebuild(api, snap);
+      else if (savedSel || savedScroll) {
+        try {
+          const wb1 = api.getActiveWorkbook?.();
+          const ws1 = wb1?.getActiveSheet?.();
+          if (ws1) {
+            if (savedSel) wb1.setActiveRange?.(ws1.getRange(savedSel));
+            if (savedScroll)
+              ws1.scrollToCell?.(
+                savedScroll.sheetViewStartRow || 0,
+                savedScroll.sheetViewStartColumn || 0
+              );
+          }
+        } catch {}
+      }
       prevSnapRef.current = snap;
       // Re-seed the change signature from the ACTUAL workbook so the save loop
       // doesn't echo this remote update straight back to the server.
@@ -539,9 +909,17 @@ export default function UniverSheet({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [snapshot]);
 
+  // The access role is fetched after mount, so re-assert the workbook's editable
+  // state whenever readOnly changes (viewer → locked, editor → unlocked).
+  useEffect(() => {
+    if (apiRef.current) applyEditable(apiRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readOnly]);
+
   return (
     <div
       ref={containerRef}
+      className={readOnly ? "univer-readonly-view" : undefined}
       style={{ width: "100%", height: "100%", minHeight: 0 }}
     />
   );

@@ -387,6 +387,11 @@ export function excelToUniverSnapshot(wb: any, name = "Uploaded"): any {
       // it (matches Excel's default and the per-cell default in cellStyle()).
       defaultStyle: { ff: "Calibri", vt: 3 },
       tabColor: resolveColor(ws.properties?.tabColor),
+      // Preserve the source sheet's hidden state so sheets that are hidden in the
+      // Excel (state "hidden"/"veryHidden") stay hidden on upload — their tab isn't
+      // shown until the user right-clicks a tab and picks "Unhide", exactly like
+      // Excel. 1 = hidden (BooleanNumber.TRUE), 0 = visible.
+      hidden: ws.state === "hidden" || ws.state === "veryHidden" ? 1 : 0,
       // Run the grid well past the data, the way Excel does. Excel never stops at
       // the last value — it rules the whole window — so a tight clamp is what left
       // that bare white area below and to the right of the table. The gridlines are

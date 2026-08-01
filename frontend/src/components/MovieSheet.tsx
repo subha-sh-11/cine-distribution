@@ -2865,11 +2865,27 @@ export default function MovieSheet({
       try {
         const wb = api.getActiveWorkbook?.();
         if (wb) {
-          // Return to the saved sheet tab.
-          if (saved?.sheetId && wb.getSheetBySheetId?.(saved.sheetId)) {
+          const snapSheets = univerSnapRef.current?.sheets;
+          const isHidden = (sid: string) => snapSheets?.[sid]?.hidden === 1;
+          // Return to the saved sheet tab — but never land on a now-hidden sheet.
+          if (
+            saved?.sheetId &&
+            wb.getSheetBySheetId?.(saved.sheetId) &&
+            !isHidden(saved.sheetId)
+          ) {
             const s = wb.getSheetBySheetId(saved.sheetId);
             if (s && s.getSheetId?.() !== wb.getActiveSheet?.()?.getSheetId?.())
               wb.setActiveSheet?.(s);
+          }
+          // If the active sheet is hidden (e.g. the source file's first tab is
+          // hidden), switch to the first visible sheet so we never open on a blank
+          // hidden tab.
+          const activeId = wb.getActiveSheet?.()?.getSheetId?.();
+          if (activeId && isHidden(activeId)) {
+            const order: string[] = univerSnapRef.current?.sheetOrder || [];
+            const vis = order.find((sid) => !isHidden(sid));
+            const s = vis && wb.getSheetBySheetId?.(vis);
+            if (s) wb.setActiveSheet?.(s);
           }
           const ws = wb.getActiveSheet?.();
           if (ws) {
@@ -3276,14 +3292,16 @@ export default function MovieSheet({
               e.target.value = "";
             }}
           />
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            title="Upload an Excel/CSV file (replaces the current view)"
-            className="rounded-md border border-line px-3 py-1.5 text-xs font-medium text-body hover:bg-chip"
-          >
-            ⬆ Upload Excel
-          </button>
-          {plainMode && (
+          {!readOnly && (
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              title="Upload an Excel/CSV file (replaces the current view)"
+              className="rounded-md border border-line px-3 py-1.5 text-xs font-medium text-body hover:bg-chip"
+            >
+              ⬆ Upload Excel
+            </button>
+          )}
+          {!readOnly && plainMode && (
             <>
               <input
                 ref={appendInputRef}
@@ -3323,41 +3341,46 @@ export default function MovieSheet({
               )}
             </>
           )}
-          <button
-            onClick={() => setShareOpen(true)}
-            title="Share this movie with others"
-            className="rounded-md border border-line px-3 py-1.5 text-xs font-medium text-body hover:bg-chip"
-          >
-            🔗 Share
-          </button>
-          {readOnly && (
+          {!readOnly && (
+            <button
+              onClick={() => setShareOpen(true)}
+              title="Share this movie with others"
+              className="rounded-md border border-line px-3 py-1.5 text-xs font-medium text-body hover:bg-chip"
+            >
+              🔗 Share
+            </button>
+          )}
+          {readOnly ? (
             <span className="rounded bg-amber-100 px-2 py-1 text-[11px] font-semibold text-amber-700">
               View only
             </span>
-          )}
-          <span className="mx-1 h-4 w-px bg-line" />
-          {!plainMode && (
+          ) : (
             <>
+              <span className="mx-1 h-4 w-px bg-line" />
+              {!plainMode && (
+                <>
+                  <button
+                    onClick={exportExcel}
+                    className="rounded-md border border-line px-3 py-1.5 text-xs font-medium text-body hover:bg-chip"
+                  >
+                    Export Excel
+                  </button>
+                  <button
+                    onClick={exportPDF}
+                    className="rounded-md border border-line px-3 py-1.5 text-xs font-medium text-body hover:bg-chip"
+                  >
+                    Export PDF
+                  </button>
+                </>
+              )}
               <button
-                onClick={exportExcel}
+                onClick={resetSheet}
                 className="rounded-md border border-line px-3 py-1.5 text-xs font-medium text-body hover:bg-chip"
               >
-                Export Excel
-              </button>
-              <button
-                onClick={exportPDF}
-                className="rounded-md border border-line px-3 py-1.5 text-xs font-medium text-body hover:bg-chip"
-              >
-                Export PDF
+                Reset
               </button>
             </>
           )}
-          <button
-            onClick={resetSheet}
-            className="rounded-md border border-line px-3 py-1.5 text-xs font-medium text-body hover:bg-chip"
-          >
-            Reset
-          </button>
         </div>
       </div>
 
@@ -3444,6 +3467,7 @@ export default function MovieSheet({
                 key={univerKey}
                 snapshot={univerSnap}
                 onChange={onUniverChange}
+                readOnly={readOnly}
                 onRequestFind={openFindBar}
                 onReady={(api, phase) => {
                   univerApiRef.current = api;

@@ -406,3 +406,13 @@ body {
   background: var(--text-faint);
   background-clip: content-box;
 }
+
+/* Viewer (read-only) movies: hide Univer's editing ribbon, the formula bar (so a
+   viewer never sees a cell's formula) and the add-sheet (+) button — only the
+   sheet grid and day tabs remain, a clean view-only surface with no editing
+   options. Scoped to the read-only container so editors keep the full toolbar. */
+.univer-readonly-view [data-u-comp="headerbar"],
+.univer-readonly-view [data-u-comp="formula-bar"],
+.univer-readonly-view [data-u-comp="sheet-bar-append-button"] {
+  display: none !important;
+}
