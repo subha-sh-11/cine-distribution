@@ -385,11 +385,12 @@ export default function UniverSheet({
       // `subId`); the button auto-highlights while armed. Row height / column
       // width are carried on top by the apply listener above.
       try {
-        const [ui, sheetsUi, core, sheets, rx] = await Promise.all([
+        const [ui, sheetsUi, core, sheets, design, rx] = await Promise.all([
           import("@univerjs/ui"),
           import("@univerjs/sheets-ui"),
           import("@univerjs/core"),
           import("@univerjs/sheets"),
+          import("@univerjs/design"),
           import("rxjs"),
         ]);
         const {
@@ -398,6 +399,8 @@ export default function UniverSheet({
           RibbonStartGroup,
           MenuItemType,
           getMenuHiddenObservable,
+          ComponentManager,
+          COLOR_PICKER_COMPONENT,
         } = ui as any;
         const {
           IFormatPainterService,
@@ -413,6 +416,81 @@ export default function UniverSheet({
         } = sheets as any;
         const { Observable } = rx as any;
         const injector = univerRef.current?.__getInjector?.();
+
+        // Excel "Standard Colors" in every color picker (font + fill) — driven
+        // from APP CODE so it ships in the bundle on every deploy (no fragile
+        // node_modules patch / patch-package build step). Both the font-color and
+        // fill-color menus render the shared COLOR_PICKER_COMPONENT and pass their
+        // own onChange, so a wrapper that renders the real ColorPicker plus a
+        // "Standard Colors" strip (calling that same onChange) applies to whichever
+        // picker is open, with the correct command. We use the ComponentManager's
+        // own React utils so it's the exact React instance Univer renders with.
+        try {
+          const componentManager = injector?.get?.(ComponentManager);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const ColorPicker = (design as any)?.ColorPicker;
+          const ru = componentManager?.reactUtils;
+          if (
+            componentManager?.register &&
+            ColorPicker &&
+            COLOR_PICKER_COMPONENT &&
+            ru?.createElement
+          ) {
+            const h = ru.createElement;
+            const useR = ru.useRef;
+            const useEff = ru.useEffect;
+            const STD = [
+              "#C00000", "#FF0000", "#FFC000", "#FFFF00", "#92D050",
+              "#00B050", "#00B0F0", "#0070C0", "#002060", "#7030A0",
+            ];
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const StandardColorPicker = (props: any) => {
+              const hostRef = useR(null);
+              useEff(() => {
+                const host = hostRef.current;
+                if (!host) return;
+                const presets = host.querySelector(
+                  '[data-u-comp="color-picker-presets"]'
+                );
+                // Append INSIDE the presets grid (after the theme rows, before
+                // "More Colors"), matching Excel's layout. Guarded so re-renders
+                // don't duplicate it.
+                if (!presets || presets.querySelector("[data-svf-std]")) return;
+                const label = document.createElement("div");
+                label.className =
+                  "univer-text-xs univer-font-medium univer-text-gray-500 univer-mt-1";
+                label.textContent = "Standard Colors";
+                label.setAttribute("data-svf-std", "label");
+                const row = document.createElement("div");
+                row.className =
+                  "univer-grid univer-grid-flow-col univer-items-center univer-justify-between univer-gap-2";
+                row.setAttribute("data-svf-std", "row");
+                STD.forEach((c) => {
+                  const b = document.createElement("button");
+                  b.type = "button";
+                  b.className =
+                    "univer-box-border univer-size-5 univer-cursor-pointer univer-rounded-full univer-border univer-border-solid univer-border-transparent univer-transition-shadow";
+                  b.style.backgroundColor = c;
+                  b.addEventListener("click", () => {
+                    try {
+                      props.onChange && props.onChange(c);
+                    } catch {}
+                  });
+                  row.appendChild(b);
+                });
+                presets.appendChild(label);
+                presets.appendChild(row);
+              });
+              return h(
+                "div",
+                { ref: hostRef, className: "univer-grid univer-gap-2" },
+                h(ColorPicker, props)
+              );
+            };
+            componentManager.register(COLOR_PICKER_COMPONENT, StandardColorPicker);
+          }
+        } catch {}
+
         const menuManager = injector?.get?.(IMenuManagerService);
         if (menuManager?.mergeMenu && SetOnceFormatPainterCommand?.id) {
           const menuItemFactory = (accessor: any) => {
