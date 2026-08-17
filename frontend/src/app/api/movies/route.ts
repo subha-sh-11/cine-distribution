@@ -34,16 +34,28 @@ type Row = {
   owned?: boolean;
   owner_email?: string | null;
   share_role?: string | null;
+  shared_by?: string | null;
 };
-const toMovie = (r: Row) => ({
-  id: r.id,
-  name: r.name,
-  release: r.release ?? "",
-  createdAt: Number(r.created_at),
-  owned: r.owned !== false, // admin/owner → true; shared-with-me → false
-  ownerEmail: r.owner_email ?? null,
-  role: r.share_role ?? (r.owned === false ? "viewer" : "editor"),
-});
+const toMovie = (r: Row) => {
+  // "Shared by" should be whoever actually shared the movie (recorded per share).
+  // Fall back to the uploader only for legacy shares that predate that tracking.
+  // The internal admin/system account is never surfaced as a sharer — end users
+  // should only ever see a real person's share, so admin is collapsed to null
+  // (the UI then shows a neutral "another user").
+  const rawSharer = r.shared_by ?? r.owner_email ?? null;
+  const sharedBy =
+    rawSharer && rawSharer.toLowerCase() !== ADMIN ? rawSharer : null;
+  return {
+    id: r.id,
+    name: r.name,
+    release: r.release ?? "",
+    createdAt: Number(r.created_at),
+    owned: r.owned !== false, // admin/owner → true; shared-with-me → false
+    ownerEmail: r.owner_email ?? null,
+    sharedBy,
+    role: r.share_role ?? (r.owned === false ? "viewer" : "editor"),
+  };
+};
 
 export async function GET() {
   const email = await currentEmail();
@@ -65,13 +77,18 @@ export async function GET() {
          PRIMARY KEY (movie_id, email))`
     )
     .catch(() => {});
+  await pool
+    .query("ALTER TABLE movie_shares ADD COLUMN IF NOT EXISTS shared_by TEXT")
+    .catch(() => {});
   // Join only THIS user's share row so we can tell owned vs shared-with-me and
-  // surface the role. A user sees a movie if they own it OR it's shared to them.
+  // surface the role + who shared it. A user sees a movie if they own it OR it's
+  // shared to them.
   const { rows } = await pool.query<Row>(
     `SELECT DISTINCT m.id, m.name, m.release, m.created_at,
             (lower(m.owner_email) = lower($1)) AS owned,
             m.owner_email,
-            s.role AS share_role
+            s.role AS share_role,
+            s.shared_by
        FROM movies m
        LEFT JOIN movie_shares s
          ON s.movie_id = m.id AND lower(s.email) = lower($1)

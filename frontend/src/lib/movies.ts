@@ -9,6 +9,7 @@ export type Movie = {
   createdAt: number;
   owned?: boolean; // false → shared with me (not my upload)
   ownerEmail?: string | null; // who uploaded/owns it
+  sharedBy?: string | null; // who actually shared it with me (never the admin acct)
   role?: string; // my access: "editor" | "viewer"
 };
 

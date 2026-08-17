@@ -18,6 +18,9 @@ async function ensure() {
   await pool
     .query("ALTER TABLE movies ADD COLUMN IF NOT EXISTS owner_email TEXT")
     .catch(() => {});
+  await pool
+    .query("ALTER TABLE movie_shares ADD COLUMN IF NOT EXISTS shared_by TEXT")
+    .catch(() => {});
 }
 
 const whoami = currentEmail; // admin or user session
@@ -71,10 +74,11 @@ export async function POST(
   if (!target || !target.includes("@"))
     return NextResponse.json({ error: "Valid email required." }, { status: 400 });
   await pool.query(
-    `INSERT INTO movie_shares (movie_id, email, role, created_at)
-       VALUES ($1,$2,$3,$4)
-     ON CONFLICT (movie_id, email) DO UPDATE SET role = EXCLUDED.role`,
-    [id, target, role, Date.now()]
+    `INSERT INTO movie_shares (movie_id, email, role, created_at, shared_by)
+       VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (movie_id, email)
+       DO UPDATE SET role = EXCLUDED.role, shared_by = EXCLUDED.shared_by`,
+    [id, target, role, Date.now(), email]
   );
   return NextResponse.json({ ok: true });
 }

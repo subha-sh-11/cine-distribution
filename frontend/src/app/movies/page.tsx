@@ -57,6 +57,33 @@ export default function MoviesPage() {
     };
   }, []);
 
+  // Warm the heavy spreadsheet engine (Univer) + the sheet components in the
+  // BACKGROUND while the user is browsing this list, so opening or uploading a
+  // sheet is near-instant instead of waiting for that big lazy bundle to
+  // download/compile at click time. Fire-and-forget, deferred to idle so it
+  // never competes with the list's first paint.
+  useEffect(() => {
+    let cancelled = false;
+    const warm = () => {
+      if (cancelled) return;
+      import("@univerjs/presets").catch(() => {});
+      import("@univerjs/presets/preset-sheets-core").catch(() => {});
+      import("@univerjs/sheets-formula").catch(() => {});
+      import("@/components/UniverSheet").catch(() => {});
+      import("@/components/MovieSheet").catch(() => {});
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const w = window as any;
+    const handle = w.requestIdleCallback
+      ? w.requestIdleCallback(warm, { timeout: 2500 })
+      : window.setTimeout(warm, 800);
+    return () => {
+      cancelled = true;
+      if (w.requestIdleCallback && w.cancelIdleCallback) w.cancelIdleCallback(handle);
+      else clearTimeout(handle as number);
+    };
+  }, []);
+
   // gzip an object → { __gz: base64 } (matches the sheet loader's decompress).
   async function compress(obj: unknown): Promise<unknown> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -201,8 +228,8 @@ export default function MoviesPage() {
                           {m.owned === false && (
                             <span
                               title={
-                                m.ownerEmail
-                                  ? `Shared by ${m.ownerEmail}`
+                                m.sharedBy
+                                  ? `Shared by ${m.sharedBy}`
                                   : "Shared with you"
                               }
                               className="shrink-0 rounded-full bg-brand-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-brand-700"
@@ -213,7 +240,9 @@ export default function MoviesPage() {
                         </p>
                         <p className="truncate text-[11px] text-faint">
                           {m.owned === false
-                            ? `Shared by ${m.ownerEmail || "another user"}`
+                            ? m.sharedBy
+                              ? `Shared by ${m.sharedBy}`
+                              : "Shared with you"
                             : m.createdAt
                             ? "Uploaded " +
                               new Date(m.createdAt).toLocaleDateString()
@@ -420,9 +449,11 @@ export default function MoviesPage() {
                         {m.role === "viewer" ? "View" : "Edit"}
                       </span>
                     </div>
-                    <p className="mt-0.5 truncate text-xs text-faint">
-                      Shared by {m.ownerEmail || "another user"}
-                    </p>
+                    {m.sharedBy && (
+                      <p className="mt-0.5 truncate text-xs text-faint">
+                        Shared by {m.sharedBy}
+                      </p>
+                    )}
                     <span className="mt-4 inline-flex items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition group-hover:bg-brand-700">
                       Open sheet →
                     </span>
