@@ -3381,6 +3381,17 @@ export default function MovieSheet({
               </button>
             </>
           )}
+          {/* Close — go back to the sheets list from the right side too (the
+              "← Movies" link on the left does the same). Shown for everyone
+              (viewers and editors). */}
+          <span className="mx-1 h-4 w-px bg-line" />
+          <Link
+            href="/movies"
+            title="Close this sheet and go back to your sheets"
+            className="rounded-md border border-line px-3 py-1.5 text-xs font-medium text-body hover:bg-rose-50 hover:text-rose-600"
+          >
+            ✕ Close
+          </Link>
         </div>
       </div>
 
