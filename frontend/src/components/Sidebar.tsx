@@ -33,6 +33,17 @@ const NAV = [
       <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm10 4 2 2 4-4" />
     ),
   },
+  {
+    href: "/admin/history",
+    label: "History",
+    icon: (
+      <>
+        <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+        <path d="M3 3v5h5" />
+        <path d="M12 7v5l4 2" />
+      </>
+    ),
+  },
 ];
 
 export default function Sidebar() {
@@ -63,11 +74,10 @@ export default function Sidebar() {
             <Link
               key={item.href}
               href={item.href}
-              className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm transition ${
-                active
+              className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm transition ${active
                   ? "bg-white/[0.10] font-medium text-white"
                   : "text-neutral-200 hover:bg-white/[0.05] hover:text-white"
-              }`}
+                }`}
             >
               <svg
                 viewBox="0 0 24 24"

@@ -16,6 +16,7 @@ import {
   signRepSession,
   verifyPassword,
 } from "@/lib/rep-auth";
+import { recordLogin } from "@/lib/login-history";
 
 const cookieOpts = {
   httpOnly: true as const,
@@ -42,6 +43,7 @@ export async function POST(req: Request) {
       ...cookieOpts,
       maxAge: SESSION_MAX_AGE,
     });
+    await recordLogin(req, ADMIN_EMAIL, "admin");
     return res;
   }
 
@@ -52,6 +54,7 @@ export async function POST(req: Request) {
       ...cookieOpts,
       maxAge: SESSION_MAX_AGE,
     });
+    await recordLogin(req, USER_EMAIL, "user");
     return res;
   }
 
@@ -68,6 +71,7 @@ export async function POST(req: Request) {
       ...cookieOpts,
       maxAge: REP_SESSION_MAX_AGE,
     });
+    await recordLogin(req, rep.email ?? em, "rep");
     return res;
   }
 
@@ -85,6 +89,7 @@ export async function POST(req: Request) {
         ...cookieOpts,
         maxAge: SESSION_MAX_AGE,
       });
+      await recordLogin(req, appUser.email, "user");
       return res;
     }
   } catch {
