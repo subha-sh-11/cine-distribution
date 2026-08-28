@@ -5,6 +5,11 @@ import "@univerjs/presets/lib/styles/preset-sheets-core.css";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+// How long the user must be idle (no key/pointer/edit) before a collaborator's
+// update is applied to their view. Applying one moves the active cell, so we
+// wait for a pause instead of interrupting active data entry.
+const IDLE_APPLY_MS = 1200;
+
 // A whitespace-only value ("" or " ") is text; it makes "text + number" formulas
 // evaluate to #VALUE!. Excel-origin pastes drop such junk into empty cells.
 function isBlankText(v: any): boolean {
@@ -107,6 +112,12 @@ export default function UniverSheet({
   const colEvtDisposeRef = useRef<any>(null); // ColumnHeaderClick disposer
   const editEvtDisposeRef = useRef<any[]>([]); // cell-edit start/end disposers
   const editingRef = useRef(false); // a cell is currently being edited
+  // Timestamp of the user's last keyboard/pointer interaction. A remote update
+  // moves the active cell (Univer's value-set command reselects the cell it
+  // writes), so we NEVER apply one while the user is actively entering data —
+  // only once they've paused. This is what stops "the cell jumping somewhere
+  // else" when two people type at the same time.
+  const lastInteractionRef = useRef(0);
   // Last server snapshot we applied (the common ancestor for diffing the next
   // remote update — so we only touch the cells other collaborators changed).
   const prevSnapRef = useRef<any>(snapshot);
@@ -120,9 +131,18 @@ export default function UniverSheet({
   useEffect(() => {
     let disposed = false;
     let saveIv: ReturnType<typeof setInterval> | undefined;
+    let flushIv: ReturnType<typeof setInterval> | undefined;
     // Track whether Shift is held at click time (for column range selection).
-    const onKey = (e: KeyboardEvent) => (shiftRef.current = e.shiftKey);
-    const onDown = (e: MouseEvent) => (shiftRef.current = e.shiftKey);
+    // Also stamp the interaction time so remote updates hold off until the user
+    // pauses (see lastInteractionRef) — no cursor jump mid-typing.
+    const onKey = (e: KeyboardEvent) => {
+      shiftRef.current = e.shiftKey;
+      lastInteractionRef.current = Date.now();
+    };
+    const onDown = (e: MouseEvent) => {
+      shiftRef.current = e.shiftKey;
+      lastInteractionRef.current = Date.now();
+    };
     // Ctrl/Cmd+F → open Univer's Find. Required because the grid is drawn on a
     // <canvas>: the browser's native find can't see cell text (it always shows
     // 0/0), so we route the shortcut to Univer's own search of the cell data.
@@ -710,6 +730,7 @@ export default function UniverSheet({
         editEvtDisposeRef.current.push(
           univerAPI.addEvent(EV?.SheetEditStarted ?? "SheetEditStarted", () => {
             editingRef.current = true;
+            lastInteractionRef.current = Date.now();
           }),
           univerAPI.addEvent(EV?.SheetEditEnded ?? "SheetEditEnded", () => {
             editingRef.current = false;
@@ -766,11 +787,26 @@ export default function UniverSheet({
           }
         } catch {}
       }, 1000);
+
+      // Apply any deferred collaborator update the instant the user goes idle.
+      // (A remote snapshot that lands while they're typing is stashed in
+      // pendingSnapRef; this drains it once they've paused for IDLE_APPLY_MS so
+      // their cursor is never yanked mid-entry, but updates still show promptly.)
+      flushIv = setInterval(() => {
+        if (replacingRef.current) return;
+        const pending = pendingSnapRef.current;
+        if (!pending) return;
+        if (editingRef.current) return;
+        if (Date.now() - lastInteractionRef.current < IDLE_APPLY_MS) return;
+        pendingSnapRef.current = null;
+        applyRemoteRef.current?.(pending);
+      }, 400);
     })();
 
     return () => {
       disposed = true;
       if (saveIv) clearInterval(saveIv);
+      if (flushIv) clearInterval(flushIv);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("keyup", onKey);
       window.removeEventListener("pointerdown", onDown, true);
@@ -926,8 +962,15 @@ export default function UniverSheet({
     if (!api || !snap) return;
     const sig = sigRef.current;
     if (sig(snap) === lastRef.current) return; // matches what's shown (our own save)
-    // Mid-edit → stash it and apply when the edit ends (don't yank the cursor).
-    if (editingRef.current) {
+    // Don't apply while the user is editing OR still actively entering data.
+    // Writing a remote cell reselects it, so applying mid-typing yanks the
+    // active cell away. Stash the newest snapshot and let the flush timer apply
+    // it the moment the user pauses (idle for IDLE_APPLY_MS). This is the fix
+    // for the cell jumping when several people type at once.
+    if (
+      editingRef.current ||
+      Date.now() - lastInteractionRef.current < IDLE_APPLY_MS
+    ) {
       pendingSnapRef.current = snap;
       return;
     }
@@ -950,17 +993,31 @@ export default function UniverSheet({
       const ok = patchInPlace(api, prevSnapRef.current, snap);
       if (!ok) fullRebuild(api, snap);
       else if (savedSel || savedScroll) {
-        try {
-          const wb1 = api.getActiveWorkbook?.();
-          const ws1 = wb1?.getActiveSheet?.();
-          if (ws1) {
+        // Put the user's selection + viewport back exactly where they were.
+        const restore = () => {
+          try {
+            const wb1 = api.getActiveWorkbook?.();
+            const ws1 = wb1?.getActiveSheet?.();
+            if (!ws1) return;
             if (savedSel) wb1.setActiveRange?.(ws1.getRange(savedSel));
-            if (savedScroll)
-              ws1.scrollToCell?.(
-                savedScroll.sheetViewStartRow || 0,
-                savedScroll.sheetViewStartColumn || 0
-              );
-          }
+            // Only restore scroll when we actually captured a position — else
+            // scrollToCell(0,0) would itself jump the viewport to the top.
+            const sr = savedScroll?.sheetViewStartRow;
+            const sc = savedScroll?.sheetViewStartColumn;
+            if (Number.isFinite(sr) || Number.isFinite(sc))
+              ws1.scrollToCell?.(Number(sr) || 0, Number(sc) || 0);
+          } catch {}
+        };
+        restore();
+        // Writing a remote cell can move the selection on a LATER frame (Univer
+        // flushes its selection update asynchronously), which would override the
+        // synchronous restore above. Re-assert once more next frame — but only if
+        // the user hasn't clicked/typed since, so we never fight a fresh action.
+        const tAtApply = lastInteractionRef.current;
+        try {
+          requestAnimationFrame(() => {
+            if (lastInteractionRef.current === tAtApply) restore();
+          });
         } catch {}
       }
       prevSnapRef.current = snap;
