@@ -19,15 +19,15 @@ export default function ThemeControls() {
   }
 
   return (
-    <div className="flex rounded-lg bg-white/[0.06] p-0.5">
+    <div className="flex rounded-lg bg-white/15 p-0.5">
       {(["light", "dark"] as Theme[]).map((t) => (
         <button
           key={t}
           onClick={() => applyTheme(t)}
           className={`flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-xs font-medium capitalize transition ${
             theme === t
-              ? "bg-white/10 text-white"
-              : "text-neutral-400 hover:text-neutral-200"
+              ? "bg-white/25 text-white shadow-sm"
+              : "text-white/70 hover:text-white"
           }`}
         >
           {t === "light" ? (

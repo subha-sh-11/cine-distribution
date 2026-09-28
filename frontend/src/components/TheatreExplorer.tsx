@@ -135,7 +135,7 @@ export default function TheatreExplorer({
                 >
                   <Chevron open={dOpen} />
                   <span className="flex-1 text-sm font-semibold text-strong">
-                    {d.name}
+                    {d.name || "Unassigned district"}
                   </span>
                   <span className="rounded bg-chip px-1.5 py-0.5 text-[10px] font-medium text-faint">
                     {assigned}/{d.total}
@@ -161,7 +161,7 @@ export default function TheatreExplorer({
                           >
                             <Chevron open={cOpen} small />
                             <span className="flex-1 truncate text-[13px] font-medium text-body">
-                              {c.name}
+                              {c.name || "Unassigned centre"}
                             </span>
                             <span className="text-[10px] text-faint">
                               {c.theatres.length}

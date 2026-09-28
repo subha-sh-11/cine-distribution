@@ -17,7 +17,7 @@ const themeScript = `
 `;
 
 export default function RootLayout({
-  children,
+  children,     
 }: {          
   children: React.ReactNode;
 }) {       
@@ -30,3 +30,4 @@ export default function RootLayout({
     </html>
   );
 }
+       ``

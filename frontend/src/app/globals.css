@@ -9,16 +9,16 @@ html {
 
 /* ---------- Light theme (default) ---------- */
 :root {
-  --canvas: #f4f5f3;
+  --canvas: #faf6f1; /* warm off-white (was green-grey) */
   --surface: #ffffff;
-  --muted: #f5f6f4;
-  --chip: #ececee;
-  --line: #e5e6e4;
-  --text-strong: #1c2620;
-  --text-body: #474d49;
-  --text-faint: #868b88;
-  --sidebar: #17251a;
-  --sidebar-fg: #cdd6cd;
+  --muted: #f8f3ec;
+  --chip: #f2eae0;
+  --line: #ede4d9;
+  --text-strong: #2a211a; /* warm charcoal */
+  --text-body: #4d443c;
+  --text-faint: #8c817a;
+  --sidebar: #2a1409; /* warm espresso brown — pairs with the orange accent */
+  --sidebar-fg: #f2d9c4;
 
   /* warm beige table (light) — only the table is beige */
   --table-bg: #f7f0e0;
@@ -29,22 +29,22 @@ html {
 
 /* ---------- Dark theme ---------- */
 [data-theme="dark"] {
-  --canvas: #0a0e15;
-  --surface: #141b26;
-  --muted: #1a2230;
-  --chip: #222c3b;
-  --line: #1a222e; /* subtle: felt, not seen */
-  --text-strong: #eef2f8;
-  --text-body: #a7b1c1;
-  --text-faint: #66717f;
-  --sidebar: #0c130d;
-  --sidebar-fg: #c9d6c9;
+  --canvas: #080706; /* near-black, faint warm tint (was blue-grey) */
+  --surface: #141210;
+  --muted: #1a1714;
+  --chip: #241f1b;
+  --line: #221d19; /* subtle: felt, not seen */
+  --text-strong: #f4f0ec;
+  --text-body: #b3aaa2;
+  --text-faint: #6d655e;
+  --sidebar: #1a0c05; /* deep warm brown for dark mode */
+  --sidebar-fg: #f0d5bf;
 
   /* table (dark) */
-  --table-bg: #141b26;
-  --table-head: #1b2432;
-  --table-stripe: #182029;
-  --table-line: #232d3b;
+  --table-bg: #141210;
+  --table-head: #1e1915;
+  --table-stripe: #191512;
+  --table-line: #2a231e;
 
   /* accent tints adapt to any accent hue */
   --brand-50: color-mix(in srgb, var(--brand-500) 15%, transparent);
@@ -54,16 +54,17 @@ html {
 }
 
 /* ---------- Accent presets ---------- */
+/* Default accent — warm cinematic ORANGE (movie-distribution brand). */
 :root,
 :root,
 [data-accent="amber"] {
-  --brand-50: #eef4ec;
-  --brand-100: #d8e7d2;
-  --brand-300: #86b979;
-  --brand-400: #5a9b4d;
-  --brand-500: #34682c;
-  --brand-600: #34682c;
-  --brand-700: #34682c;
+  --brand-50: #fff3e9;
+  --brand-100: #ffe0c7;
+  --brand-300: #fdba74;
+  --brand-400: #fb923c;
+  --brand-500: #f97316;
+  --brand-600: #ea580c;
+  --brand-700: #c2410c;
 }
 [data-accent="indigo"] {
   --brand-50: #eef2ff;
@@ -119,6 +120,64 @@ body {
   background-attachment: fixed;
   color: var(--text-body);
   -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- Login showcase: live "Cine Distribution" app animation ---------- */
+@keyframes svf-sheen {
+  0%   { transform: translate3d(-8%, -4%, 0) rotate(-6deg); }
+  100% { transform: translate3d(6%, 4%, 0) rotate(-6deg); }
+}
+@keyframes svf-beam {
+  0%   { transform: translateY(-18%) rotate(14deg); opacity: 0; }
+  35%  { opacity: 0.5; }
+  100% { transform: translateY(118%) rotate(14deg); opacity: 0; }
+}
+@keyframes svf-viewIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes svf-rowIn {
+  from { opacity: 0; transform: translateX(-8px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes svf-cellFill {
+  0%   { opacity: 0; }
+  30%  { opacity: 1; }
+  100% { opacity: 1; }
+}
+@keyframes svf-growY {
+  from { transform: scaleY(0); }
+  to   { transform: scaleY(1); }
+}
+@keyframes svf-growX {
+  from { transform: scaleX(0); }
+  to   { transform: scaleX(1); }
+}
+@keyframes svf-countPulse {
+  0%   { opacity: 0; transform: translateY(6px); }
+  60%  { opacity: 1; transform: translateY(0); }
+  100% { opacity: 1; transform: none; }
+}
+@keyframes svf-cornerIn {
+  0%   { opacity: 0; transform: translate(-26px, -22px) scale(0.86); }
+  60%  { opacity: 1; }
+  100% { opacity: 1; transform: translate(0, 0) scale(1); }
+}
+@keyframes svf-popIn {
+  from { opacity: 0; transform: translateY(16px) scale(0.95); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes svf-scrimIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes svf-cursorTap {
+  0%, 100% { transform: scale(1); }
+  45%      { transform: scale(0.84); }
+}
+@keyframes svf-ripple {
+  0%   { transform: scale(0.2); opacity: 0.5; }
+  100% { transform: scale(2.4); opacity: 0; }
 }
 
 /* ---------- Movie sheet toolbar: cohesive, polished chrome ---------- */
@@ -223,14 +282,14 @@ body {
   border-radius: 5px;
   transition: color 120ms ease, background-color 120ms ease;
 }
-/* Rates & special shows — green text only, no background */
+/* Rates & special shows — accent (orange) text only, no background */
 .spl-collapse--rates,
 .spl-collapse--spl {
-  color: #417e37;
+  color: #ea580c;
 }
 .spl-collapse--rates:hover,
 .spl-collapse--spl:hover {
-  color: #34682c;
+  color: #c2410c;
 }
 /* Expand affordance sits above neighbours (no background fill) */
 .spl-collapse--pill {
@@ -320,11 +379,11 @@ body {
 }
 [data-theme="dark"] .jss_content tbody td,
 [data-theme="dark"] .jexcel tbody td {
-  color: #eef2f8;
+  color: #f4f0ec;
 }
 [data-theme="dark"] .jss_content tbody tr > td:first-child,
 [data-theme="dark"] .jexcel tbody tr > td:first-child {
-  color: #c7cfd9;
+  color: #ccc3ba;
 }
 
 /* District band row — merged into a single full-width cell (via colSpan in JS).
@@ -347,9 +406,9 @@ body {
 }
 [data-theme="dark"] .jss_content tbody tr.dist-row td,
 [data-theme="dark"] .jexcel tbody tr.dist-row td {
-  background: #232d3b !important;
-  border-top: 1px solid #33405280 !important;
-  border-bottom: 1px solid #33405280 !important;
+  background: #241f1b !important;
+  border-top: 1px solid #3a302880 !important;
+  border-bottom: 1px solid #3a302880 !important;
 }
 [data-theme="dark"] .jss_content tbody tr.dist-row td:nth-child(2),
 [data-theme="dark"] .jexcel tbody tr.dist-row td:nth-child(2) {

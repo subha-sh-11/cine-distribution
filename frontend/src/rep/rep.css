@@ -11,11 +11,11 @@
   --color-ink-soft: #5a657a;
   --color-ink-faint: #8a94a6;
 
-  /* Accent — SVF green (matches the admin/movies apps). */
-  --color-accent: #417e37;
-  --color-accent-hover: #34682c;
-  --color-accent-soft: #e7f0e4;
-  --color-accent-ink: #2c5624;
+  /* Accent — SVF orange (matches the admin/movies apps). */
+  --color-accent: #ea580c;
+  --color-accent-hover: #c2410c;
+  --color-accent-soft: #ffe7d5;
+  --color-accent-ink: #9a3412;
 
   --color-success: #17915b;
   --color-success-soft: #e3f5ec;
