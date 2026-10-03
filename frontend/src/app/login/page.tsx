@@ -570,11 +570,8 @@ export default function LoginPage() {
         className="relative flex w-full flex-col overflow-hidden lg:w-[54%]"
         style={{ backgroundImage: "linear-gradient(135deg,#7c2d12 0%,#ea580c 48%,#f59e0b 100%)" }}
       >
-        <div className="pointer-events-none absolute inset-[-14%]" style={{ background: "conic-gradient(from 206deg at 34% 34%, #FF9A4A, #D14A10 20%, #FFB878 38%, #C2410C 56%, #FF8A2F 72%, #FFD3AC 88%, #FF9A4A)", filter: "blur(2px)", animation: "svf-sheen 32s ease-in-out infinite alternate" }} />
-        <div className="pointer-events-none absolute inset-0" style={{ background: "radial-gradient(66% 52% at 50% 40%, rgba(255,226,193,0.4), transparent 78%)" }} />
+        <div className="pointer-events-none absolute inset-0" style={{ background: "radial-gradient(66% 52% at 50% 40%, rgba(255,226,193,0.35), transparent 78%)" }} />
         <div className="pointer-events-none absolute inset-0" style={{ background: "linear-gradient(198deg, rgba(120,40,4,0.18), transparent 46%, rgba(120,40,4,0.32))" }} />
-        <div className="pointer-events-none absolute top-0 h-[150%] w-[120px]" style={{ left: "8%", background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.22) 44%, rgba(255,255,255,0.42) 50%, rgba(255,255,255,0.22) 56%, transparent)", animation: "svf-beam 16s linear infinite" }} />
-        <div className="pointer-events-none absolute top-0 h-[150%] w-[90px]" style={{ left: "54%", background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.16) 46%, rgba(255,255,255,0.34) 52%, transparent)", animation: "svf-beam 22s 5s linear infinite" }} />
 
         <div className="relative z-10 flex items-center gap-3 px-6 pt-8 sm:px-12 sm:pt-10">
           <span className="grid h-10 w-10 place-items-center rounded-lg bg-white/15 text-sm font-bold tracking-tight text-white ring-1 ring-white/30 backdrop-blur">SVF</span>

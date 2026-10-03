@@ -230,7 +230,7 @@ export default function TheatreExplorer({
       </div>
 
       {/* ---- Detail ---- */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="relative flex-1 overflow-y-auto">
         {selected ? (
           <TheatreDetail
             t={selected}
@@ -249,6 +249,19 @@ export default function TheatreExplorer({
               Browse the tree by district and centre, then pick a theatre to see its
               screens, rates and representative.
             </p>
+          </div>
+        )}
+
+        {/* SVC corner wordmark */}
+        {selected && (
+          <div
+            className="pointer-events-none absolute bottom-5 right-6 flex select-none items-center gap-2 text-faint"
+            aria-hidden
+          >
+            <span className="h-px w-6 bg-current opacity-40" />
+            <span className="text-[11px] font-semibold uppercase" style={{ letterSpacing: "0.32em" }}>
+              SVC
+            </span>
           </div>
         )}
       </div>

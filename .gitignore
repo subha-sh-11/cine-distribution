@@ -23,3 +23,11 @@ Thumbs.db
 
 .vscode/
 
+# Internal docs & data dumps (not part of the app)
+*.docx
+*.pdf
+*.xls
+*.xlsx
+PROJECT_DOCUMENTATION.md
+og_terms.json
+
